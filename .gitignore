@@ -1,0 +1,56 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+*.dart.js
+*.info.json
+*.js
+*.js_
+*.js.deps
+*.js.map
+doc/api/
+
+# Android
+android/local.properties
+android/.gradle/
+android/captures/
+android/gradlew
+android/gradlew.bat
+android/gradle/wrapper/gradle-wrapper.jar
+android/key.properties
+**/*.keystore
+**/*.jks
+*.apk
+*.aab
+
+# iOS
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/Generated.xcconfig
+ios/.symlinks/
+ios/Pods/
+*.ipa
+
+# Secrets / env
+.env
+.env.*
+secrets.dart
+*_secret.dart
+google-services.json
+GoogleService-Info.plist
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# macOS
+.DS_Store
+
+# Logs / crash
+*.log
+crash_log.json
