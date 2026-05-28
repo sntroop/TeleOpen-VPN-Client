@@ -1,7 +1,7 @@
 name: my_vpn
 description: "TeleOpen VPN Project"
 publish_to: 'none'
-version: 1.0.3+5001
+version: 1.0.4+5002
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
