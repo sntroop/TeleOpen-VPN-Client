@@ -24,7 +24,29 @@ On top of the core VPN, there's an AI-powered connection fixer that diagnoses br
 
 ## Screenshots
 
-> _Coming soon — contributions welcome_
+| Home | Market |
+|------|--------|
+| 
+
+![Home](screenshots/Screenshot_20260528_044351.png)
+
+ | 
+
+![Market](screenshots/Screenshot_20260528_044402.png)
+
+ |
+
+| Settings | Diagnostics |
+|----------|-------------|
+| 
+
+![Settings](screenshots/Screenshot_20260528_044423.png)
+
+ | 
+
+![Diagnostics](screenshots/Screenshot_20260528_044436.png)
+
+ |
 
 ---
 
