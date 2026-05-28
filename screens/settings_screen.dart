@@ -1,0 +1,786 @@
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
+
+import '../ios_theme.dart';
+import '../main.dart';
+import 'log_screen.dart';
+import 'world_map_screen.dart';
+import 'per_app_proxy_screen.dart';
+import 'dns_screen.dart';
+import 'warp_screen.dart';
+import 'tls_tricks_screen.dart';
+import 'diagnostics_screen.dart';
+import 'author_panel_screen.dart';
+import 'admin_panel_screen.dart';
+import 'themes_screen.dart';
+import 'network_screen.dart';
+import 'local_ports_screen.dart';
+import 'external_controller_screen.dart';
+import 'meta_features_screen.dart';
+import 'dns_leak_test_screen.dart';
+import 'proxy_visibility_screen.dart';
+import 'statistics_screen.dart';
+import 'fix_server_screen.dart';
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  
+  late AppSettings _s;
+
+  static const _balancerStrategies = <String>[
+    'Round robin',
+    'Random',
+    'Least ping',
+    'Least load',
+  ];
+
+  static const _ipv6Modes = <String>[
+    'Отключить',
+    'Только IPv4',
+    'Предпочитать IPv4',
+    'Предпочитать IPv6',
+    'Только IPv6',
+  ];
+
+  static const _regions = <String>[
+    'Россия (ru)',
+    'США (us)',
+    'Германия (de)',
+    'Нидерланды (nl)',
+    'Великобритания (gb)',
+    'Япония (jp)',
+    'Сингапур (sg)',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    
+    final appSettings = AppStateScope.of(context, listen: false).settings;
+    _s = AppSettings(
+      killSwitch:         appSettings.killSwitch,
+      autoConnect:        appSettings.autoConnect,
+      dns:                appSettings.dns,
+      packetAnalysis:     appSettings.packetAnalysis,
+      useMux:             appSettings.useMux,
+      region:             appSettings.region,
+      balancerStrategy:   appSettings.balancerStrategy,
+      blockAds:           appSettings.blockAds,
+      bypassLan:          appSettings.bypassLan,
+      resolveDestination: appSettings.resolveDestination,
+      ipv6Route:          appSettings.ipv6Route,
+    );
+  }
+
+  
+  void _update(void Function(AppSettings s) mutate) {
+    setState(() => mutate(_s));
+    AppStateScope.of(context, listen: false).updateSettings(_s);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    final state = AppStateScope.of(context);
+
+    return Scaffold(
+      backgroundColor: c.bgPrimary,
+      body: SafeArea(
+        bottom: false,
+        child: CustomScrollView(
+          physics: const BouncingScrollPhysics(),
+          slivers: [
+            
+            SliverToBoxAdapter(child: _SettingsHeader()),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.wand_stars,
+                    leadingIconBg: c.blue,
+                    title: 'Починить сервер',
+                    subtitle: 'ИИ сам подберёт настройки',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const FixServerScreen(),
+                    )),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Соединение',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.shield_lefthalf_fill,
+                    leadingIconBg: c.green,
+                    title: 'Kill Switch',
+                    subtitle: 'Блокировать интернет при разрыве VPN',
+                    trailing: IosSwitch(
+                      value: _s.killSwitch,
+                      onChanged: (v) => _update((s) => s.killSwitch = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.bolt_fill,
+                    leadingIconBg: c.orange,
+                    title: 'Автоподключение',
+                    subtitle: 'Подключаться при запуске',
+                    trailing: IosSwitch(
+                      value: _s.autoConnect,
+                      onChanged: (v) => _update((s) => s.autoConnect = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.globe,
+                    leadingIconBg: c.fill,
+                    title: 'DNS-сервер',
+                    trailingText: _s.dns,
+                    showChevron: true,
+                    onTap: () => _showDnsPicker(context),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Продвинутое',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.chart_bar_alt_fill,
+                    leadingIconBg: c.purple,
+                    title: 'Анализ пакетов',
+                    subtitle: 'Sniffing для HTTP/TLS',
+                    trailing: IosSwitch(
+                      value: _s.packetAnalysis,
+                      onChanged: (v) => _update((s) => s.packetAnalysis = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.arrow_branch,
+                    leadingIconBg: c.fill,
+                    title: 'Mux (мультиплексирование)',
+                    subtitle: 'Несколько соединений в одном',
+                    trailing: IosSwitch(
+                      value: _s.useMux,
+                      onChanged: (v) => _update((s) => s.useMux = v),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Маршрутизация',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.square_grid_2x2,
+                    leadingIconBg: c.fill,
+                    title: 'Прокси для приложений',
+                    trailing: IosSwitch(
+                      value: AppStateScope.of(context).perApp.enabled,
+                      onChanged: (v) {
+                        AppStateScope.of(context, listen: false).setPerAppProxy(
+                          AppStateScope.of(context, listen: false).perApp.copyWith(enabled: v),
+                        );
+                        if (v) {
+                          Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => const PerAppProxyScreen(),
+                          ));
+                        }
+                      },
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.placemark_fill,
+                    leadingIconBg: c.fill,
+                    title: 'Регион',
+                    subtitle: _s.region,
+                    showChevron: true,
+                    onTap: () => _showOptions(
+                      title: 'Регион',
+                      options: _regions,
+                      current: _s.region,
+                      onSelect: (v) => _update((s) => s.region = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.arrow_2_squarepath,
+                    leadingIconBg: c.fill,
+                    title: 'Стратегия Balancer',
+                    subtitle: _s.balancerStrategy,
+                    showChevron: true,
+                    onTap: () => _showOptions(
+                      title: 'Стратегия Balancer',
+                      options: _balancerStrategies,
+                      current: _s.balancerStrategy,
+                      onSelect: (v) => _update((s) => s.balancerStrategy = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.nosign,
+                    leadingIconBg: c.fill,
+                    title: 'Блокировать рекламу',
+                    trailing: IosSwitch(
+                      value: _s.blockAds,
+                      onChanged: (v) => _update((s) => s.blockAds = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.arrow_branch,
+                    leadingIconBg: c.fill,
+                    title: 'Обход LAN',
+                    trailing: IosSwitch(
+                      value: _s.bypassLan,
+                      onChanged: (v) => _update((s) => s.bypassLan = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.shield,
+                    leadingIconBg: c.fill,
+                    title: 'Определять адрес назначения',
+                    trailing: IosSwitch(
+                      value: _s.resolveDestination,
+                      onChanged: (v) => _update((s) => s.resolveDestination = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.number,
+                    leadingIconBg: c.fill,
+                    title: 'Маршрут IPv6',
+                    subtitle: _s.ipv6Route,
+                    showChevron: true,
+                    onTap: () => _showOptions(
+                      title: 'Маршрут IPv6',
+                      options: _ipv6Modes,
+                      current: _s.ipv6Route,
+                      onSelect: (v) => _update((s) => s.ipv6Route = v),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Сеть',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.globe,
+                    leadingIconBg: c.blue,
+                    title: 'DNS',
+                    subtitle: 'Удаленный и исходящий DNS',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const DnsScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.cloud,
+                    leadingIconBg: c.orange,
+                    title: 'WARP',
+                    subtitle: 'Cloudflare WARP и шум',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const WarpScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.scissors,
+                    leadingIconBg: c.purple,
+                    title: 'Трюки TLS',
+                    subtitle: 'Фрагментация, SNI, padding',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const TlsTricksScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.map,
+                    leadingIconBg: c.fill,
+                    title: 'Карта серверов',
+                    subtitle: 'Визуализация на карте мира',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const WorldMapScreen(),
+                    )),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Продвинутая сеть',
+                footer:
+                    'Тонкая настройка ядра: интеграция с системой, локальные '
+                    'порты прокси, REST-API контроллера и расширения Mihomo/Meta.',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.antenna_radiowaves_left_right,
+                    leadingIconBg: c.blue,
+                    title: 'Сеть',
+                    subtitle: 'Маршрутизация, DNS-перехват, IPv6',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const NetworkScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.number,
+                    leadingIconBg: c.fill,
+                    title: 'Локальные порты',
+                    subtitle: 'HTTP/Socks/TProxy/Mixed, LAN, Bind',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const LocalPortsScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.lock_circle,
+                    leadingIconBg: c.fill,
+                    title: 'External Controller',
+                    subtitle: 'REST-API для дашбордов',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const ExternalControllerScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.gear_alt_fill,
+                    leadingIconBg: c.purple,
+                    title: 'Функции Meta',
+                    subtitle: 'Sniffing, Geo Files, MPTCP',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const MetaFeaturesScreen(),
+                    )),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Диагностика',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.chart_bar_fill,
+                    leadingIconBg: c.blue,
+                    title: 'Статистика',
+                    subtitle: 'Трафик, сессии, топ серверов',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const StatisticsScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.doc_text_search,
+                    leadingIconBg: c.fill,
+                    title: 'VPN-лог',
+                    subtitle: 'Журнал работы движка',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const LogScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.wand_stars,
+                    leadingIconBg: c.yellow,
+                    title: 'Диагностика сети',
+                    subtitle: 'Проверить доступность',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const DiagnosticsScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.drop_triangle,
+                    leadingIconBg: c.red,
+                    title: 'Тест утечки DNS',
+                    subtitle: 'Проверить, не утекают ли запросы',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const DnsLeakTestScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.eye,
+                    leadingIconBg: c.fill,
+                    title: 'Заметность прокси',
+                    subtitle: 'WebRTC, JA3, заголовки',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const ProxyVisibilityScreen(),
+                    )),
+                  ),
+                ],
+              ),
+            ),
+
+            
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'О приложении',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.info,
+                    leadingIconBg: c.fill,
+                    title: 'Версия',
+                    trailingText: '1.0.0',
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.person_2_fill,
+                    leadingIconBg: c.pink,
+                    title: 'Авторы',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const AuthorPanelScreen(),
+                    )),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.paintbrush_fill,
+                    leadingIconBg: c.purple,
+                    title: 'Темы оформления',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const ThemesScreen(),
+                    )),
+                  ),
+                  if (state.currentUser?.isAdmin == true)
+                    IosListTile(
+                      leadingIcon: CupertinoIcons.shield_fill,
+                      leadingIconBg: c.red,
+                      title: 'Модерация',
+                      showChevron: true,
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const AdminPanelScreen(),
+                      )),
+                    ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.heart_fill,
+                    leadingIconBg: c.red,
+                    title: 'Поддержать',
+                    showChevron: true,
+                    onTap: () => _showSupport(context),
+                  ),
+                ],
+              ),
+            ),
+
+            SliverToBoxAdapter(
+              child: SizedBox(height: MediaQuery.of(context).padding.bottom + 32),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  
+  void _showOptions({
+    required String title,
+    required List<String> options,
+    required String current,
+    required ValueChanged<String> onSelect,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _OptionPickerSheet(
+        title: title,
+        options: options,
+        currentValue: current,
+        onSelect: onSelect,
+      ),
+    );
+  }
+
+  
+  void _showDnsPicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _DnsPickerSheet(
+        currentValue: _s.dns,
+        onSelect: (v) => _update((s) => s.dns = v),
+      ),
+    );
+  }
+
+  
+  void _showSupport(BuildContext context) {
+    IosDialog.show(
+      context,
+      IosDialog(
+        title: 'Поддержать проект',
+        description: 'Если приложение вам полезно - расскажите о нём друзьям или оставьте отзыв в магазине.',
+        actions: [
+          IosButton(
+            label: 'Закрыть',
+            style: IosButtonStyle.plain,
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsHeader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 16, 8),
+      child: Row(
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => Navigator.of(context).pop(),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(children: [
+                Icon(CupertinoIcons.chevron_back, size: 22, color: c.textPrimary),
+                Text(' Назад', style: t.textStyles.body.copyWith(color: c.textPrimary)),
+              ]),
+            ),
+          ),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+}
+
+class _DnsPickerSheet extends StatefulWidget {
+  final String currentValue;
+  final ValueChanged<String> onSelect;
+  const _DnsPickerSheet({required this.currentValue, required this.onSelect});
+
+  @override
+  State<_DnsPickerSheet> createState() => _DnsPickerSheetState();
+}
+
+class _DnsPickerSheetState extends State<_DnsPickerSheet> {
+  late final TextEditingController _ctrl;
+  static const _presets = [
+    ('1.1.1.1', 'Cloudflare'),
+    ('8.8.8.8', 'Google'),
+    ('9.9.9.9', 'Quad9'),
+    ('1.0.0.1', 'Cloudflare alt'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.currentValue);
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  void _apply(String v) {
+    final value = v.trim();
+    if (value.isEmpty) return;
+    widget.onSelect(value);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Container(
+        margin: EdgeInsets.fromLTRB(8, 0, 8, MediaQuery.of(context).padding.bottom + 8),
+        decoration: BoxDecoration(
+          color: c.bgSecondary,
+          borderRadius: IosShapes.continuous(IosShapes.radiusXLarge),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 6),
+              alignment: Alignment.center,
+              child: Container(
+                width: 36, height: 4,
+                decoration: BoxDecoration(color: c.textQuaternary, borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+              child: Row(children: [
+                Text('DNS-сервер', style: t.textStyles.headline),
+                const Spacer(),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context).pop(),
+                  child: Icon(CupertinoIcons.xmark_circle_fill, size: 28, color: c.textQuaternary),
+                ),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: IosField(
+                controller: _ctrl,
+                label: 'Свой адрес',
+                placeholder: 'Например 1.1.1.1',
+                keyboardType: TextInputType.text,
+                onChanged: (_) {},
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: IosButton(
+                label: 'Применить',
+                style: IosButtonStyle.primary,
+                onPressed: () => _apply(_ctrl.text),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Text(
+                'ПРЕСЕТЫ',
+                style: t.textStyles.footnote.copyWith(color: c.textSecondary, letterSpacing: 0.5),
+              ),
+            ),
+            for (int i = 0; i < _presets.length; i++) ...[
+              IosListTile(
+                title: _presets[i].$1,
+                subtitle: _presets[i].$2,
+                trailing: widget.currentValue == _presets[i].$1
+                    ? Icon(CupertinoIcons.check_mark, size: 18, color: c.textPrimary)
+                    : null,
+                onTap: () {
+                  _ctrl.text = _presets[i].$1;
+                  _apply(_presets[i].$1);
+                },
+              ),
+              if (i < _presets.length - 1)
+                Container(margin: const EdgeInsets.only(left: 16), height: 0.5, color: c.separator),
+            ],
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OptionPickerSheet extends StatelessWidget {
+  final String title;
+  final List<String> options;
+  final String currentValue;
+  final ValueChanged<String> onSelect;
+
+  const _OptionPickerSheet({
+    required this.title,
+    required this.options,
+    required this.currentValue,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    return _BottomSheetContainer(
+      title: title,
+      children: options.map((v) {
+        final selected = v == currentValue;
+        return IosListTile(
+          title: v,
+          trailing: selected
+              ? Icon(CupertinoIcons.check_mark, size: 18, color: c.textPrimary)
+              : null,
+          onTap: () {
+            onSelect(v);
+            Navigator.of(context).pop();
+          },
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _BottomSheetContainer extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+  const _BottomSheetContainer({required this.title, required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+
+    final tiles = <Widget>[];
+    for (int i = 0; i < children.length; i++) {
+      tiles.add(children[i]);
+      if (i < children.length - 1) {
+        tiles.add(Container(margin: const EdgeInsets.only(left: 54), height: 0.5, color: c.separator));
+      }
+    }
+
+    return Container(
+      margin: EdgeInsets.fromLTRB(8, 0, 8, MediaQuery.of(context).padding.bottom + 8),
+      decoration: BoxDecoration(
+        color: c.bgSecondary,
+        borderRadius: IosShapes.continuous(IosShapes.radiusXLarge),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 8, bottom: 6),
+            width: 36, height: 4,
+            decoration: BoxDecoration(color: c.textQuaternary, borderRadius: BorderRadius.circular(2)),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            child: Row(children: [
+              Text(title, style: t.textStyles.headline),
+              const Spacer(),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => Navigator.of(context).pop(),
+                child: Icon(CupertinoIcons.xmark_circle_fill, size: 28, color: c.textQuaternary),
+              ),
+            ]),
+          ),
+          ...tiles,
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}

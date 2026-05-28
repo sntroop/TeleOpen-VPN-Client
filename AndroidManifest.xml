@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- ВАЖНО: для VPN-туннеля на Android 14+ (targetSdk 34..36) корректный
+         тип foreground-сервиса — connectedDevice, а НЕ specialUse.
+         specialUse зарезервирован под системные интеграции и при ХОЛОДНОМ
+         старте VpnService-наследника Android бросает
+         ForegroundServiceTypeNotAllowedException → нативный краш без Dart-лога.
+         Именно поэтому VPN «ломался сам по себе» после дня простоя:
+         процесс выгружался, и горячий путь (где краш не воспроизводился)
+         сменялся холодным. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"/>
+
+    <!-- ═══ Package visibility (Android 11+) ═══════════════════════════════
+         Нужно, чтобы приложение могло видеть Telegram-форки и запускать
+         tg://proxy?... через setPackage(). Работает даже без
+         QUERY_ALL_PACKAGES — поэтому если Google Play потребует убрать
+         QUERY_ALL_PACKAGES, MTProto-функция продолжит работать. -->
+    <queries>
+        <!-- Любое приложение, умеющее открывать tg:// deep-links -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tg" />
+        </intent>
+        <!-- t.me HTTPS-ссылки на прокси -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" android:host="t.me" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="TeleOpen"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ═══ Hysteria TUN VpnService ═══════════════════════════════════════ -->
+        <service
+            android:name=".HysteriaTunVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="connectedDevice">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <!-- Always-on / Lockdown: появляется тоггл в Системных настройках → VPN.
+                 Когда пользователь его включит, Android будет автоматически
+                 переподключать сервис при старте устройства и блокировать
+                 трафик пока туннель не поднят (если выбран Lockdown). -->
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+        </service>
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+            <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
+    </application>
+</manifest>

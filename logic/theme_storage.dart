@@ -1,0 +1,32 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/theme.dart';
+
+const String kPrefsThemeKey = 'custom_theme_json';
+
+class ThemeStorage {
+  
+  static Future<UserTheme?> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(kPrefsThemeKey);
+      if (raw == null || raw.isEmpty) return null;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      return UserTheme.fromJson(j);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> save(UserTheme theme) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kPrefsThemeKey, jsonEncode(theme.toJson()));
+  }
+
+  
+  static Future<void> clear() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(kPrefsThemeKey);
+  }
+}
