@@ -1,11 +1,24 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Релизная подпись. Секреты лежат в android/key.properties (НЕ в git —
+// см. .gitignore + key.properties.example). Если файла нет (CI без секретов,
+// чужой клон), молча откатываемся на debug-подпись, чтобы сборка не падала.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.my_vpn"
+    namespace = "space.teleopen.app"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
@@ -20,7 +33,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.my_vpn"
+        applicationId = "space.teleopen.app"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
         versionCode = flutter.versionCode
@@ -28,9 +41,25 @@ android {
         multiDexEnabled = true
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            // Прод-подпись из key.properties; fallback на debug, если ключа нет.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

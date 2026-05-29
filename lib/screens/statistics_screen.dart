@@ -3,6 +3,12 @@
 // Экран статистики использования VPN.
 // Показывает: историю сессий, топ серверов по времени/трафику,
 // суммарный трафик, красивый bar-chart по дням.
+//
+// Корень библиотеки statistics_screen. Здесь модель/storage, экран и его State;
+// вспомогательные виджеты (карточки/график/тайлы) и форматтеры вынесены в
+// part-файлы screens/statistics/. Путь файла не менялся → импорты не трогаются.
+
+library statistics_screen;
 
 import 'dart:convert';
 import 'dart:math' as math;
@@ -13,6 +19,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../ios_theme.dart';
 import '../main.dart';
+
+part 'statistics/charts.dart';
+part 'statistics/tiles.dart';
+part 'statistics/format.dart';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MODEL
@@ -131,6 +141,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 
   Future<void> _confirmClear() async {
+    final prefs = AppStateScope.of(context, listen: false).prefs;
     final confirmed = await showCupertinoDialog<bool>(
       context: context,
       builder: (_) => CupertinoAlertDialog(
@@ -151,7 +162,6 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       ),
     );
     if (confirmed == true) {
-      final prefs = AppStateScope.of(context, listen: false).prefs;
       await SessionStorage.clear(prefs);
       await _load();
     }
@@ -539,354 +549,3 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// ВСПОМОГАТЕЛЬНЫЕ ВИДЖЕТЫ
-// ════════════════════════════════════════════════════════════════════════════
-
-class _SummaryCard extends StatelessWidget {
-  final IosThemeData t;
-  final IosColors c;
-  final IconData icon;
-  final Color color;
-  final String label;
-  final String value;
-
-  const _SummaryCard({
-    required this.t,
-    required this.c,
-    required this.icon,
-    required this.color,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: c.bgSecondary,
-        borderRadius: IosShapes.continuous(IosShapes.radiusLarge),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 22, color: color),
-          const SizedBox(height: 8),
-          Text(value, style: t.textStyles.title2.copyWith(color: c.textPrimary)),
-          const SizedBox(height: 2),
-          Text(label, style: t.textStyles.caption1.copyWith(color: c.textSecondary)),
-        ],
-      ),
-    );
-  }
-}
-
-class _LegendDot extends StatelessWidget {
-  final Color color;
-  const _LegendDot({required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 8, height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
-  }
-}
-
-class _DayBar {
-  final String label;
-  final int rx;
-  final int tx;
-  const _DayBar({required this.label, required this.rx, required this.tx});
-}
-
-class _WeekBarChart extends StatelessWidget {
-  final List<_DayBar> bars;
-  final int maxBytes;
-  final Color rxColor;
-  final Color txColor;
-
-  const _WeekBarChart({
-    required this.bars,
-    required this.maxBytes,
-    required this.rxColor,
-    required this.txColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      size: Size.infinite,
-      painter: _BarChartPainter(
-        bars: bars,
-        maxBytes: maxBytes,
-        rxColor: rxColor,
-        txColor: txColor,
-      ),
-    );
-  }
-}
-
-class _BarChartPainter extends CustomPainter {
-  final List<_DayBar> bars;
-  final int maxBytes;
-  final Color rxColor;
-  final Color txColor;
-
-  _BarChartPainter({
-    required this.bars,
-    required this.maxBytes,
-    required this.rxColor,
-    required this.txColor,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (bars.isEmpty || maxBytes == 0) return;
-
-    const barGap = 4.0;
-    final groupWidth = size.width / bars.length;
-    final halfBarW = (groupWidth - barGap * 3) / 2;
-    final radius = Radius.circular(math.min(halfBarW / 2, 4));
-
-    for (int i = 0; i < bars.length; i++) {
-      final bar = bars[i];
-      final groupLeft = i * groupWidth + barGap;
-
-      // RX bar (левый)
-      final rxH = (bar.rx / maxBytes) * size.height;
-      if (rxH > 0) {
-        final rxRect = RRect.fromRectAndCorners(
-          Rect.fromLTWH(groupLeft, size.height - rxH, halfBarW, rxH),
-          topLeft: radius, topRight: radius,
-        );
-        canvas.drawRRect(rxRect, Paint()..color = rxColor.withValues(alpha: 0.85));
-      }
-
-      // TX bar (правый)
-      final txH = (bar.tx / maxBytes) * size.height;
-      if (txH > 0) {
-        final txRect = RRect.fromRectAndCorners(
-          Rect.fromLTWH(groupLeft + halfBarW + barGap, size.height - txH, halfBarW, txH),
-          topLeft: radius, topRight: radius,
-        );
-        canvas.drawRRect(txRect, Paint()..color = txColor.withValues(alpha: 0.85));
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_BarChartPainter o) =>
-      o.bars != bars || o.maxBytes != maxBytes;
-}
-
-class _NodeStat {
-  final String name;
-  final String protocol;
-  final int sessions;
-  final int totalBytes;
-  final int totalSec;
-
-  const _NodeStat({
-    required this.name,
-    required this.protocol,
-    required this.sessions,
-    required this.totalBytes,
-    required this.totalSec,
-  });
-}
-
-class _NodeStatTile extends StatelessWidget {
-  final IosThemeData t;
-  final IosColors c;
-  final _NodeStat node;
-  final double ratio;
-  final int rank;
-
-  const _NodeStatTile({
-    required this.t,
-    required this.c,
-    required this.node,
-    required this.ratio,
-    required this.rank,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final rankColors = [c.orange, c.textSecondary, c.fill, c.fill, c.fill];
-    final rankColor = rankColors[math.min(rank - 1, rankColors.length - 1)];
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 28, height: 28,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: rankColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '$rank',
-                  style: t.textStyles.footnote.copyWith(
-                    color: rankColor,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      node.name,
-                      style: t.textStyles.body.copyWith(color: c.textPrimary),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      '${node.protocol} · ${node.sessions} ${_sessionsLabel(node.sessions)}',
-                      style: t.textStyles.caption1.copyWith(color: c.textSecondary),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _formatBytes(node.totalBytes),
-                style: t.textStyles.body.copyWith(
-                  color: c.textPrimary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: ratio,
-              minHeight: 4,
-              backgroundColor: c.fill,
-              valueColor: AlwaysStoppedAnimation<Color>(c.blue),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _sessionsLabel(int n) {
-    if (n % 10 == 1 && n % 100 != 11) return 'сессия';
-    if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'сессии';
-    return 'сессий';
-  }
-}
-
-class _SessionTile extends StatelessWidget {
-  final IosThemeData t;
-  final IosColors c;
-  final SessionRecord session;
-
-  const _SessionTile({required this.t, required this.c, required this.session});
-
-  @override
-  Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final diff = now.difference(session.startedAt);
-    final timeLabel = diff.inDays >= 1
-        ? '${diff.inDays}д назад'
-        : diff.inHours >= 1
-            ? '${diff.inHours}ч назад'
-            : '${diff.inMinutes}м назад';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          Container(
-            width: 34, height: 34,
-            decoration: BoxDecoration(
-              color: c.blue.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(CupertinoIcons.wifi, size: 18, color: c.blue),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  session.nodeName,
-                  style: t.textStyles.body.copyWith(color: c.textPrimary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  '${session.protocol} · ${_formatDuration(session.durationSec)}',
-                  style: t.textStyles.caption1.copyWith(color: c.textSecondary),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                _formatBytes(session.totalBytes),
-                style: t.textStyles.footnote.copyWith(color: c.textPrimary),
-              ),
-              Text(
-                timeLabel,
-                style: t.textStyles.caption2.copyWith(color: c.textSecondary),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// ФОРМАТИРОВАНИЕ
-// ════════════════════════════════════════════════════════════════════════════
-
-String _formatBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024) {
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
-  }
-  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-}
-
-String _formatDuration(int sec) {
-  final h = sec ~/ 3600;
-  final m = (sec % 3600) ~/ 60;
-  final s = sec % 60;
-  if (h > 0) return '$hч ${m.toString().padLeft(2, '0')}м';
-  return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-}
-
-String _formatDurationLong(int sec) {
-  if (sec < 60) return '$sec с';
-  final h = sec ~/ 3600;
-  final m = (sec % 3600) ~/ 60;
-  if (h >= 24) {
-    final d = h ~/ 24;
-    final rh = h % 24;
-    return '$dд $rhч';
-  }
-  if (h > 0) return '$hч $mм';
-  return '$mм';
-}

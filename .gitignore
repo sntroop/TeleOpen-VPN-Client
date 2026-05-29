@@ -35,6 +35,16 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Release artifacts — собранные APK не храним в репе (раздувают историю).
+# Релиз кладём в GitHub Releases / на бэкенд через teleopen-publish.
+*.apk
+*.aab
+
+# Подпись релиза — секреты не коммитим (см. android/key.properties.example)
+android/key.properties
+*.jks
+*.keystore
+
 # Symbolication related
 app.*.symbols
 
@@ -45,3 +55,4 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+dist/

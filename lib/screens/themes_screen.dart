@@ -66,10 +66,11 @@ class _ThemesScreenState extends State<ThemesScreen> {
               if (hasCustom)
                 GestureDetector(
                   onTap: () async {
+                    final themeScope = IosThemeScope.of(context);
                     HapticFeedback.lightImpact();
                     await ThemeStorage.clear();
                     if (!mounted) return;
-                    IosThemeScope.of(context).setCustomTheme(null);
+                    themeScope.setCustomTheme(null);
                     setState(() {});
                   },
                   child: Text('Сбросить',
@@ -526,8 +527,10 @@ class _ColorRow extends StatelessWidget {
 
   String _toHex(Color c) {
     String h(int v) => v.toRadixString(16).padLeft(2, '0').toUpperCase();
-    final a = c.alpha == 255 ? '' : h(c.alpha);
-    return '#$a${h(c.red)}${h(c.green)}${h(c.blue)}';
+    final argb = c.toARGB32();
+    final alpha = (argb >> 24) & 0xff;
+    final a = alpha == 255 ? '' : h(alpha);
+    return '#$a${h((argb >> 16) & 0xff)}${h((argb >> 8) & 0xff)}${h(argb & 0xff)}';
   }
 }
 

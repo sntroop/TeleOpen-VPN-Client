@@ -53,9 +53,9 @@
 }
 
 # ── Наш VPN сервис ───────────────────────────────────────────────────
--keep class com.example.my_vpn.HysteriaTunVpnService { *; }
--keep class com.example.my_vpn.HysteriaTunVpnService$Companion { *; }
--keep class com.example.my_vpn.MainActivity { *; }
+-keep class space.teleopen.app.HysteriaTunVpnService { *; }
+-keep class space.teleopen.app.HysteriaTunVpnService$Companion { *; }
+-keep class space.teleopen.app.MainActivity { *; }
 
 -dontwarn libv2ray.**
 -dontwarn go.**

@@ -40,7 +40,7 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
   void initState() {
     super.initState();
     _hsv = HSVColor.fromColor(widget.initial);
-    _alpha = widget.initial.alpha / 255.0;
+    _alpha = widget.initial.a;
     _hexCtrl = TextEditingController(text: _toHex(widget.initial));
   }
 
@@ -53,8 +53,8 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
   Color get _currentColor => _hsv.toColor().withValues(alpha: _alpha);
 
   String _toHex(Color c) {
-    String h(int v) => v.toRadixString(16).padLeft(2, '0').toUpperCase();
-    return '${h(c.alpha)}${h(c.red)}${h(c.green)}${h(c.blue)}';
+    final argb = c.toARGB32();
+    return argb.toRadixString(16).padLeft(8, '0').toUpperCase();
   }
 
   void _updateFromHex(String text) {
@@ -66,7 +66,7 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
     final c = Color(n);
     setState(() {
       _hsv = HSVColor.fromColor(c);
-      _alpha = c.alpha / 255.0;
+      _alpha = c.a;
     });
   }
 

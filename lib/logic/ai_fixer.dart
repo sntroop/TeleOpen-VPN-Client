@@ -73,6 +73,10 @@ class FixAction {
   }
 }
 
+// Имена значений намеренно snake_case: они байт-в-байт совпадают с тем, что
+// присылает бэкенд в JSON (матчинг через `e.name == typeStr`). Переименование
+// в lowerCamelCase сломает разбор ответа ИИ — поэтому линт здесь подавлен.
+// ignore_for_file: constant_identifier_names
 enum FixActionType {
   /// Изменить bool/String в AppSettings (только разрешённые поля).
   switch_setting,
@@ -314,6 +318,8 @@ class AiFixer {
       s.destroy();
       return sw.elapsedMilliseconds;
     } catch (_) {
+      // Недоступность хоста — это и есть результат пробы (-1), а не ошибка
+      // приложения: возвращаем сигнальное значение без логирования.
       return -1;
     }
   }
@@ -402,6 +408,8 @@ class AiFixer {
       try {
         msg = ((jsonDecode(r.body) as Map)['detail'] ?? r.body).toString();
       } catch (_) {
+        // Тело ошибки не-JSON — берём как есть; сообщение всё равно попадёт
+        // в брошенное ниже исключение, отдельный лог излишен.
         msg = r.body;
       }
       throw Exception('AI fix failed (${r.statusCode}): $msg');

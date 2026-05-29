@@ -21,8 +21,8 @@ class VpnStats {
 }
 
 class VpnBridge {
-  static const _method = MethodChannel('com.example.my_vpn/native');
-  static const _event  = EventChannel('com.example.my_vpn/vpn_status');
+  static const _method = MethodChannel('space.teleopen.app/native');
+  static const _event  = EventChannel('space.teleopen.app/vpn_status');
 
   StreamSubscription? _statusSub;
   void Function(String status)? _onStatus;

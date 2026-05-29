@@ -24,6 +24,8 @@
 
 import 'dart:convert';
 
+import '../logic/crash_log.dart';
+
 class MtProtoProxyException implements Exception {
   final String message;
   MtProtoProxyException(this.message);
@@ -378,7 +380,10 @@ class MtProtoProxyGroup {
           .map((e) =>
               MtProtoProxyGroup.fromJson((e as Map).cast<String, dynamic>()))
           .toList();
-    } catch (_) {
+    } catch (e, st) {
+      // Битый/несовместимый JSON групп прокси в prefs — не роняем приложение,
+      // но фиксируем: молчаливая потеря сохранённых прокси иначе незаметна.
+      CrashLog.record(e, st, 'mtproto.decode');
       return [];
     }
   }

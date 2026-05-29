@@ -101,6 +101,8 @@ class SubscriptionLoader {
       decoded = utf8.decode(
           base64.decode(res.body.trim().replaceAll(RegExp(r'\s+'), '')));
     } catch (_) {
+      // Тело не в base64 — это штатно: многие подписки отдают plaintext-список
+      // ссылок. Используем тело как есть, без логирования (не ошибка).
       decoded = res.body;
     }
 
@@ -208,6 +210,8 @@ class SubscriptionLoader {
       try {
         return utf8.decode(base64.decode(val.substring(7)));
       } catch (_) {
+        // Заголовок помечен base64:, но не декодируется — отдаём как есть
+        // (штатный fallback для кривых заголовков), не ошибка.
         return val;
       }
     }

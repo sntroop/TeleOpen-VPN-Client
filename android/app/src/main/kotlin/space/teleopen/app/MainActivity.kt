@@ -1,4 +1,4 @@
-package com.example.my_vpn
+package space.teleopen.app
 
 import android.app.Activity
 import android.content.Intent
@@ -17,8 +17,8 @@ import java.io.File
 class MainActivity : FlutterActivity() {
 
     companion object {
-        const val METHOD_CHANNEL         = "com.example.my_vpn/native"
-        const val EVENT_CHANNEL          = "com.example.my_vpn/vpn_status"
+        const val METHOD_CHANNEL         = "space.teleopen.app/native"
+        const val EVENT_CHANNEL          = "space.teleopen.app/vpn_status"
         const val VPN_PERMISSION_REQUEST = 1001
         const val GEO_FILE_PICK_REQUEST  = 1002
     }

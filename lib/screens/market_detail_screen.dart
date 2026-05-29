@@ -71,7 +71,10 @@ class _MarketDetailScreenState extends State<MarketDetailScreen> {
       final l = await MarketApi.liveStats(widget.groupId);
       if (!mounted) return;
       setState(() => _live = l);
-    } catch (_) {/* silent */}
+    } catch (_) {
+      // Тихо: это поллинг живой статистики каждые 12с, сетевой сбой здесь
+      // штатен и не должен ни спамить лог, ни дёргать UI ошибкой.
+    }
   }
 
   Future<void> _addToMy() async {
@@ -101,6 +104,8 @@ class _MarketDetailScreenState extends State<MarketDetailScreen> {
       // Сообщаем бэку про начало сессии (если залогинен)
       final uid = state.currentUser?.id;
       if (uid != null) {
+        // Некритичная серверная аналитика (счётчик сессий) — её сбой не должен
+        // влиять на добавление подписки, поэтому намеренно глушим без лога.
         try { await MarketApi.startSession(groupId: widget.groupId); } catch (_) {}
       }
 

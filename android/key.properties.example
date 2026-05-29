@@ -1,0 +1,14 @@
+# Шаблон для релизной подписи. Скопируй в android/key.properties и заполни.
+# РЕАЛЬНЫЙ key.properties и *.jks НЕ коммитятся (см. .gitignore).
+#
+# Сгенерировать ключ:
+#   keytool -genkeypair -v -keystore android/teleopen-release.jks \
+#     -keyalg RSA -keysize 4096 -validity 10000 -alias teleopen
+#
+# ⚠️ ПОТЕРЯ keystore ИЛИ пароля = невозможность выпускать обновления
+#    с той же подписью. Забэкапь teleopen-release.jks + эти пароли в надёжном месте.
+
+storePassword=ЗАМЕНИ_МЕНЯ
+keyPassword=ЗАМЕНИ_МЕНЯ
+keyAlias=teleopen
+storeFile=teleopen-release.jks

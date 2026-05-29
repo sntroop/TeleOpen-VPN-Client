@@ -10,6 +10,7 @@ import 'package:installed_apps/app_info.dart';
 import '../ios_theme.dart';
 import '../main.dart';
 import '../models/per_app_proxy.dart';
+import '../logic/crash_log.dart';
 
 class PerAppProxyScreen extends StatefulWidget {
   const PerAppProxyScreen({super.key});
@@ -48,7 +49,10 @@ class _PerAppProxyScreenState extends State<PerAppProxyScreen> {
         return a.name.compareTo(b.name);
       });
       if (mounted) setState(() { _apps = apps; _loading = false; });
-    } catch (_) {
+    } catch (e, st) {
+      // Список приложений не получен (нет разрешения/ошибка плагина) — снимаем
+      // спиннер и фиксируем причину: иначе экран молча остаётся пустым.
+      CrashLog.record(e, st, 'perapp.list');
       if (mounted) setState(() => _loading = false);
     }
   }

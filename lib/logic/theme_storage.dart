@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/theme.dart';
+import 'crash_log.dart';
 
 const String kPrefsThemeKey = 'custom_theme_json';
 
@@ -18,7 +19,10 @@ class ThemeStorage {
       if (raw == null || raw.isEmpty) return null;
       final j = jsonDecode(raw) as Map<String, dynamic>;
       return UserTheme.fromJson(j);
-    } catch (_) {
+    } catch (e, st) {
+      // Повреждённый/несовместимый JSON темы: не валим запуск, откатываемся
+      // к встроенной теме, но фиксируем для разбора.
+      CrashLog.record(e, st, 'theme.load');
       return null;
     }
   }

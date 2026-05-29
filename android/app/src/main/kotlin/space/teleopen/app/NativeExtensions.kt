@@ -1,4 +1,4 @@
-package com.example.my_vpn
+package space.teleopen.app
 
 import android.content.Context
 import android.net.Uri

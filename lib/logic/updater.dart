@@ -75,7 +75,7 @@ class UpdaterService extends ChangeNotifier {
   static final UpdaterService instance = UpdaterService._();
 
   // Тот же канал, что в MainActivity (METHOD_CHANNEL).
-  static const _channel = MethodChannel('com.example.my_vpn/native');
+  static const _channel = MethodChannel('space.teleopen.app/native');
 
   // Ключи в SharedPreferences
   static const _kSkipped       = 'update_skipped_version_code';

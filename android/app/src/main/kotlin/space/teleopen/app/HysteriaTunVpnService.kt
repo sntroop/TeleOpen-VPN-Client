@@ -1,4 +1,4 @@
-package com.example.my_vpn
+package space.teleopen.app
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -25,9 +25,9 @@ class HysteriaTunVpnService : VpnService() {
     companion object {
         const val TAG = "TeleOpenVpn"
 
-        const val ACTION_START_HYSTERIA = "com.example.my_vpn.START_HYSTERIA"
-        const val ACTION_START_V2RAY    = "com.example.my_vpn.START_V2RAY"
-        const val ACTION_STOP           = "com.example.my_vpn.STOP_VPN"
+        const val ACTION_START_HYSTERIA = "space.teleopen.app.START_HYSTERIA"
+        const val ACTION_START_V2RAY    = "space.teleopen.app.START_V2RAY"
+        const val ACTION_STOP           = "space.teleopen.app.STOP_VPN"
 
         const val EXTRA_CONFIG      = "config"
         const val EXTRA_REMARK      = "remark"

@@ -15,6 +15,8 @@ class TcpPing {
       sock.destroy();
       return sw.elapsedMilliseconds;
     } catch (_) {
+      // Недоступность/таймаут — это и есть результат пинга (null). Логировать
+      // не нужно: pingAll вызывает этот метод по каждой ноде, лог бы засорялся.
       return null;
     }
   }

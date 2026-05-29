@@ -394,6 +394,8 @@ class DiagnosticsRunner {
       sock.destroy();
       return sw.elapsedMilliseconds;
     } catch (_) {
+      // Недоступность/таймаут — штатный результат TCP-замера (null), не ошибка
+      // приложения; логировать не нужно.
       return null;
     }
   }

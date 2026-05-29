@@ -24,7 +24,7 @@ class Hysteria2Manager {
   static Future<bool> start(String hy2Uri) async {
     await stop();
     try {
-      const platform = MethodChannel('com.example.my_vpn/native');
+      const platform = MethodChannel('space.teleopen.app/native');
       final nativeLibDir = await platform.invokeMethod<String>('getNativeLibDir');
       if (nativeLibDir == null) return false;
       final binPath = '$nativeLibDir/libhysteria2.so';

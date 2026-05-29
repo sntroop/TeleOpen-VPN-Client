@@ -172,7 +172,9 @@ class _WorldMapScreenState extends State<WorldMapScreen> with TickerProviderStat
     final focusPxY = focus.dy * mapH;
     final dx = view.width / 2 - scale * focusPxX;
     final dy = view.height / 2 - scale * focusPxY;
-    _transform.value = Matrix4.identity()..translate(dx, dy)..scale(scale);
+    _transform.value = Matrix4.identity()
+      ..translateByDouble(dx, dy, 0, 1)
+      ..scaleByDouble(scale, scale, scale, 1);
     _currentScale = scale;
   }
 

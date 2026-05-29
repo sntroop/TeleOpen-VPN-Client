@@ -32,6 +32,9 @@ class Geolocation {
       }
       return list.first.address;
     } catch (_) {
+      // DNS-резолв не удался (оффлайн/неизвестный хост) — для best-effort
+      // геолокации это штатный исход: возвращаем null без логирования, иначе
+      // на каждой недоступной ноде карты копился бы шум в логах.
       return null;
     }
   }
@@ -82,6 +85,8 @@ class Geolocation {
       _cache[host] = p;
       return p;
     } catch (_) {
+      // Сетевая ошибка/таймаут ip-api — геолокация не критична, тихо
+      // отдаём null (см. комментарий в _resolveDns про шум в логах).
       return null;
     }
   }

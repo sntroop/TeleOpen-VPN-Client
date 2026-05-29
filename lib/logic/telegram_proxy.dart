@@ -181,7 +181,7 @@ class TelegramProxyService {
 
   // Используем тот же нативный канал, что и VPN-движок (см. MainActivity.kt:
   // METHOD_CHANNEL). Отдельный канал плодить не нужно.
-  static const _channel = MethodChannel('com.example.my_vpn/native');
+  static const _channel = MethodChannel('space.teleopen.app/native');
 
   static Future<void> _launchSystem(String link) async {
     final uri = Uri.parse(link);
