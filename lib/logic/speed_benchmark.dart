@@ -1,24 +1,27 @@
 // lib/logic/speed_benchmark.dart
 //
-// Обёртка вокруг готового speed-тест плагина (flutter_internet_speed_test_pro).
-// Под капотом плагин использует Fast.com (Netflix CDN) — это и сам Netflix
-// для своего speedtest, и большинство сторонних speed-приложений. Он
-// автоматически выбирает рабочий сервер и нормально проходит через VPN-TUN.
+// Самописный бенчмарк скорости на dart:io. НЕ используем сторонний плагин:
+// flutter_internet_speed_test_pro оборачивал заброшенную нативку
+// (fr.bmartel.speedtest, ~2019) + выбор сервера Fast.com — download/upload
+// зависали на 0 и с VPN, и без. Плюс его фолбэк-сервер ходит по http://, а
+// network_security_config теперь запрещает cleartext.
 //
-// Самописная реализация на dart:io / package:http к cloudflare через TUN
-// стабильно падала: либо большие стримы зависали (соединение есть, байты
-// не идут), либо DNS-резолв `speed.cloudflare.com` рандомно проваливался
-// между фазами с Failed host lookup. Подробности — в истории git, не
-// возвращаемся туда.
+// Здесь меряем напрямую через Cloudflare (https, без cleartext-проблем):
+//   download: GET https://speed.cloudflare.com/__down?bytes=N
+//   upload:   POST https://speed.cloudflare.com/__up
 //
-// Публичный API (SpeedBenchmark, SpeedTestPhase, SpeedTestResult,
-// SpeedTestProgress) сохранён — UI и остальной код менять не нужно.
+// Два известных режима отказа прошлой самописной версии и как закрыты:
+//   1. «стримы зависали — соединение есть, байты не идут»  → watchdog:
+//      если N секунд нет новых байт, останавливаемся с тем, что намеряли.
+//   2. «DNS speed.cloudflare.com рандомно падал с Failed host lookup» →
+//      один переиспользуемый HttpClient (DNS кешируется) + ретрай коннекта.
+//
+// Тест ограничен по времени (не по объёму): крутится _testWindow секунд и
+// считает среднюю скорость за окно. Публичный API не менялся — UI не трогаем.
 
 import 'dart:async';
 import 'dart:io';
-
-import 'package:flutter_internet_speed_test_pro/flutter_internet_speed_test_pro.dart'
-    as fistp;
+import 'dart:typed_data';
 
 import 'crash_log.dart';
 
@@ -42,10 +45,10 @@ class SpeedTestResult {
   });
 }
 
-/// Колбэк прогресса — сигнатура та же, что была раньше, чтобы UI не ломать.
+/// Колбэк прогресса — сигнатура та же, что и раньше, чтобы UI не ломать.
 typedef SpeedTestProgress = void Function({
   required SpeedTestPhase phase,
-  required double progress,     // 0.0 .. 1.0
+  required double progress, // 0.0 .. 1.0
   required double currentSpeed, // Мбит/с
   required int pingMs,
   required double jitterMs,
@@ -54,33 +57,30 @@ typedef SpeedTestProgress = void Function({
 /// Основной класс бенчмарка.
 class SpeedBenchmark {
   bool _cancelled = false;
-  late fistp.FlutterInternetSpeedTest _engine;
+  HttpClient? _client;
+
+  // Сколько секунд крутим каждую фазу и за сколько тишины считаем зависанием.
+  static const _testWindow = Duration(seconds: 10);
+  static const _idleTimeout = Duration(seconds: 5);
+  static const _downUrl = 'https://speed.cloudflare.com/__down?bytes=104857600';
+  static const _upUrl = 'https://speed.cloudflare.com/__up';
 
   /// Отменить текущий тест.
   void cancel() {
     _cancelled = true;
     try {
-      _engine.cancelTest();
+      _client?.close(force: true);
     } catch (e) {
-      CrashLog.note('speedtest', 'cancelTest бросил: $e');
+      CrashLog.note('speedtest', 'client.close бросил: $e');
     }
   }
 
-  /// Запустить полный тест: ping → download → upload.
+  /// Полный тест: ping → download → upload.
   /// Возвращает результат или null если тест упал/отменён.
   Future<SpeedTestResult?> run(SpeedTestProgress onProgress) async {
     _cancelled = false;
-    _engine = fistp.FlutterInternetSpeedTest();
 
-    final completer = Completer<SpeedTestResult?>();
-
-    // ── Сначала меряем latency сами через TCP-handshake к 1.1.1.1.
-    // Плагин ping не считает; мы возвращаем эту цифру в onProgress и в
-    // итоговый SpeedTestResult, чтобы у пользователя всё-таки было «ping».
-    final pingAndJitter = await _measureLatency(onProgress);
-    final pingMs = pingAndJitter.$1;
-    final jitterMs = pingAndJitter.$2;
-
+    final (pingMs, jitterMs) = await _measureLatency(onProgress);
     if (_cancelled) {
       onProgress(
         phase: SpeedTestPhase.done,
@@ -90,117 +90,196 @@ class SpeedBenchmark {
       return null;
     }
 
-    // ── Состояние, которое заполняется колбэками плагина по ходу теста.
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..idleTimeout = const Duration(seconds: 10)
+      ..autoUncompress = false; // не даём gzip искажать измеряемый объём
+    _client = client;
+
     double downloadMbps = 0;
     double uploadMbps = 0;
-    bool downloadDone = false;
-    SpeedTestPhase currentPhase = SpeedTestPhase.download;
-
-    CrashLog.note('speedtest', 'старт через flutter_internet_speed_test_pro');
-
     try {
-      await _engine.startTesting(
-        // Fast.com (Netflix). Если useFastApi=false — плагин пойдёт на
-        // дефолтный Ookla-сервер. Fast обычно стабильнее под VPN.
-        useFastApi: true,
-
-        onStarted: () {
-          currentPhase = SpeedTestPhase.download;
-          onProgress(
-            phase: currentPhase, progress: 0, currentSpeed: 0,
-            pingMs: pingMs, jitterMs: jitterMs,
-          );
-        },
-
-        // Прогресс приходит и для download, и для upload — отличаем по тому,
-        // была ли уже onDownloadComplete.
-        onProgress: (double percent, fistp.TestResult data) {
-          if (_cancelled) return;
-          currentPhase = downloadDone
-              ? SpeedTestPhase.upload
-              : SpeedTestPhase.download;
-          // percent у плагина 0..100
-          onProgress(
-            phase: currentPhase,
-            progress: (percent / 100.0).clamp(0.0, 1.0),
-            currentSpeed: _toMbps(data),
-            pingMs: pingMs,
-            jitterMs: jitterMs,
-          );
-        },
-
-        onDownloadComplete: (fistp.TestResult data) {
-          downloadMbps = _toMbps(data);
-          downloadDone = true;
-          CrashLog.note('speedtest',
-              'download готов: ${downloadMbps.toStringAsFixed(2)} Мбит/с');
-        },
-
-        onUploadComplete: (fistp.TestResult data) {
-          uploadMbps = _toMbps(data);
-          CrashLog.note('speedtest',
-              'upload готов: ${uploadMbps.toStringAsFixed(2)} Мбит/с');
-        },
-
-        onCompleted: (fistp.TestResult dl, fistp.TestResult ul) {
-          // Дублируем — иногда onDownloadComplete/onUploadComplete не
-          // успевают сработать раньше onCompleted.
-          if (downloadMbps == 0) downloadMbps = _toMbps(dl);
-          if (uploadMbps == 0) uploadMbps = _toMbps(ul);
-
-          onProgress(
-            phase: SpeedTestPhase.done,
-            progress: 1.0,
-            currentSpeed: 0,
-            pingMs: pingMs,
-            jitterMs: jitterMs,
-          );
-          if (!completer.isCompleted) {
-            completer.complete(SpeedTestResult(
-              downloadMbps: downloadMbps,
-              uploadMbps: uploadMbps,
-              pingMs: pingMs,
-              jitterMs: jitterMs,
-              timestamp: DateTime.now(),
-            ));
-          }
-        },
-
-        onError: (String errorMessage, String speedTestError) {
-          CrashLog.note('speedtest',
-              'ошибка плагина: $errorMessage ($speedTestError)');
-          if (!completer.isCompleted) completer.complete(null);
-        },
-
-        onCancel: () {
-          CrashLog.note('speedtest', 'тест отменён пользователем');
-          if (!completer.isCompleted) completer.complete(null);
-        },
-      );
+      CrashLog.note('speedtest', 'старт (самописный, cloudflare)');
+      downloadMbps = await _measureDownload(client, onProgress, pingMs, jitterMs);
+      if (!_cancelled) {
+        uploadMbps = await _measureUpload(client, onProgress, pingMs, jitterMs);
+      }
     } catch (e, st) {
-      CrashLog.note('speedtest', 'startTesting бросил: $e\n$st');
-      if (!completer.isCompleted) completer.complete(null);
+      CrashLog.note('speedtest', 'тест упал: $e\n$st');
+    } finally {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+      _client = null;
     }
 
+    if (_cancelled) return null;
+
+    onProgress(
+      phase: SpeedTestPhase.done,
+      progress: 1.0, currentSpeed: 0,
+      pingMs: pingMs, jitterMs: jitterMs,
+    );
+    CrashLog.note('speedtest',
+        'готово: ↓${downloadMbps.toStringAsFixed(1)} ↑${uploadMbps.toStringAsFixed(1)} Мбит/с');
+
+    return SpeedTestResult(
+      downloadMbps: downloadMbps,
+      uploadMbps: uploadMbps,
+      pingMs: pingMs,
+      jitterMs: jitterMs,
+      timestamp: DateTime.now(),
+    );
+  }
+
+  /// Открыть запрос с одним ретраем — лечит рандомный Failed host lookup.
+  Future<HttpClientResponse> _openWithRetry(
+      Future<HttpClientRequest> Function() open) async {
+    try {
+      final req = await open();
+      return await req.close();
+    } on SocketException catch (e) {
+      CrashLog.note('speedtest', 'коннект упал ($e), ретрай через 400мс');
+      await Future.delayed(const Duration(milliseconds: 400));
+      final req = await open();
+      return await req.close();
+    }
+  }
+
+  // ── DOWNLOAD ───────────────────────────────────────────────────────────────
+  Future<double> _measureDownload(
+    HttpClient client,
+    SpeedTestProgress onProgress,
+    int pingMs,
+    double jitterMs,
+  ) async {
+    onProgress(
+      phase: SpeedTestPhase.download,
+      progress: 0, currentSpeed: 0, pingMs: pingMs, jitterMs: jitterMs,
+    );
+
+    final resp =
+        await _openWithRetry(() => client.getUrl(Uri.parse(_downUrl)));
+
+    final completer = Completer<double>();
+    final sw = Stopwatch()..start();
+    var bytes = 0;
+    StreamSubscription<List<int>>? sub;
+    Timer? watchdog;
+
+    double mbps() {
+      final secs = sw.elapsedMilliseconds / 1000.0;
+      return secs > 0 ? (bytes * 8 / 1e6) / secs : 0;
+    }
+
+    void finish() {
+      watchdog?.cancel();
+      sub?.cancel();
+      if (!completer.isCompleted) completer.complete(mbps());
+    }
+
+    void armWatchdog() {
+      watchdog?.cancel();
+      watchdog = Timer(_idleTimeout, () {
+        CrashLog.note('speedtest', 'download: $_idleTimeout без байт — стоп');
+        finish();
+      });
+    }
+
+    sub = resp.listen(
+      (chunk) {
+        if (_cancelled) {
+          finish();
+          return;
+        }
+        bytes += chunk.length;
+        armWatchdog();
+        final elapsed = sw.elapsedMilliseconds;
+        onProgress(
+          phase: SpeedTestPhase.download,
+          progress: (elapsed / _testWindow.inMilliseconds).clamp(0.0, 1.0),
+          currentSpeed: mbps(),
+          pingMs: pingMs,
+          jitterMs: jitterMs,
+        );
+        if (elapsed >= _testWindow.inMilliseconds) finish();
+      },
+      onError: (e) {
+        CrashLog.note('speedtest', 'download onError: $e');
+        finish();
+      },
+      onDone: finish,
+      cancelOnError: true,
+    );
+
+    armWatchdog();
     return completer.future;
   }
 
-  /// Конвертим TestResult плагина в Мбит/с. Плагин уже возвращает Mbps,
-  /// но проверяем единицу на всякий случай — на случай если попадёт Kbps.
-  double _toMbps(fistp.TestResult data) {
-    final speed = data.transferRate;
-    // У плагина есть поле unit (SpeedUnit.Mbps / SpeedUnit.Kbps).
-    // Если Kbps — конвертим. Если уже Mbps — отдаём как есть.
+  // ── UPLOAD ───────────────────────────────────────────────────────────────
+  Future<double> _measureUpload(
+    HttpClient client,
+    SpeedTestProgress onProgress,
+    int pingMs,
+    double jitterMs,
+  ) async {
+    onProgress(
+      phase: SpeedTestPhase.upload,
+      progress: 0, currentSpeed: 0, pingMs: pingMs, jitterMs: jitterMs,
+    );
+
+    final chunk = Uint8List(64 * 1024); // 64 КБ нулей на отправку
+    final sw = Stopwatch()..start();
+    var sent = 0;
+    var stop = false;
+
+    double mbps() {
+      final secs = sw.elapsedMilliseconds / 1000.0;
+      return secs > 0 ? (sent * 8 / 1e6) / secs : 0;
+    }
+
+    // Генератор тела: бэкпрешер addStream сам притормаживает нас под скорость
+    // сокета, поэтому sent ≈ реально ушедшие в сеть байты.
+    Stream<List<int>> body() async* {
+      while (!stop &&
+          !_cancelled &&
+          sw.elapsedMilliseconds < _testWindow.inMilliseconds) {
+        yield chunk;
+        sent += chunk.length;
+        onProgress(
+          phase: SpeedTestPhase.upload,
+          progress:
+              (sw.elapsedMilliseconds / _testWindow.inMilliseconds).clamp(0.0, 1.0),
+          currentSpeed: mbps(),
+          pingMs: pingMs,
+          jitterMs: jitterMs,
+        );
+        await Future<void>.delayed(Duration.zero); // отдать управление циклу
+      }
+    }
+
     try {
-      final unit = data.unit;
-      if (unit == fistp.SpeedUnit.kbps) return speed / 1000.0;
-    } catch (_) {/* unit может отсутствовать в старых версиях */}
-    return speed;
+      final req = await client.postUrl(Uri.parse(_upUrl));
+      req.headers.contentType = ContentType('application', 'octet-stream');
+      req.headers.chunkedTransferEncoding = true;
+
+      // Watchdog на весь upload: окно + запас на финальный ответ.
+      final guard = Timer(_testWindow + const Duration(seconds: 6), () {
+        stop = true;
+      });
+
+      await req.addStream(body());
+      final resp = await req.close();
+      await resp.drain<void>();
+      guard.cancel();
+    } catch (e) {
+      CrashLog.note('speedtest', 'upload упал: $e');
+    }
+
+    return mbps();
   }
 
-  /// Замер latency и jitter через TCP-handshake к 1.1.1.1:443.
-  /// Это работает даже когда DNS через VPN кривой, потому что IP жёстко зашит.
-  /// Возвращает (медианный пинг, jitter).
+  // ── LATENCY (как было — TCP-handshake к 1.1.1.1, не зависит от DNS) ────────
   Future<(int, double)> _measureLatency(SpeedTestProgress onProgress) async {
     onProgress(
       phase: SpeedTestPhase.latency,

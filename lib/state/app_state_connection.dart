@@ -6,12 +6,16 @@
 part of 'app_state.dart';
 
 mixin AppStateConnection on AppStateBase {
+  @override
   Future<void> connect(VpnNode node) async {
     if (status == VpnStatus.connecting) return;
     if (status == VpnStatus.connected) {
       await disconnect();
       await Future.delayed(const Duration(milliseconds: 300));
     }
+    // Пользователь (или авто-старт) инициирует коннект → снимаем флаг userStop,
+    // чтобы failover снова мог срабатывать на обрывах этой сессии.
+    _failover.userStopped = false;
     activeNode = node;
     status = VpnStatus.connecting;
     lastError = null;
@@ -31,6 +35,7 @@ mixin AppStateConnection on AppStateBase {
           remark: node.name,
           perAppEnabled: perAppOn,
           allowedPackages: allowedPkgs,
+          killSwitch: settings.killSwitch,
         );
         if (!ok) {
           await Hysteria2Manager.stop();
@@ -47,6 +52,7 @@ mixin AppStateConnection on AppStateBase {
           remark: node.name,
           perAppEnabled: perAppOn,
           allowedPackages: allowedPkgs,
+          killSwitch: settings.killSwitch,
         );
         if (!ok) throw Exception('Не удалось запустить xray');
       }
@@ -57,6 +63,9 @@ mixin AppStateConnection on AppStateBase {
       await Future.delayed(const Duration(seconds: 2));
       status = VpnStatus.stopped;
       notifyListeners();
+      // Сервер не поднялся — пробуем следующий (если включён failover и юзер
+      // не отменял). Cap/backoff внутри FailoverController защищают от петли.
+      await _tryFailover(failedId: node.id);
     }
   }
 
@@ -73,6 +82,8 @@ mixin AppStateConnection on AppStateBase {
 
   @override
   Future<void> disconnect() async {
+    // Пользователь сам отключился → failover не должен срабатывать на этом стопе.
+    _failover.userStopped = true;
     // Сохраняем сессию ДО обнуления activeNode
     final sessionStart = _sessionStart;
     final node = activeNode;

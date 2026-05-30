@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Политика сетевой безопасности.
+
+  ВАЖНО про область действия: этот конфиг управляет ТОЛЬКО нативным
+  Android-стеком (java.net / OkHttp / WebView). HTTP-запросы Flutter идут
+  через dart:io и НЕ проходят через network_security_config — поэтому
+  cleartext для подписок/маркета закрыт на уровне Dart (везде https://),
+  а здесь мы:
+    1) декларируем запрет cleartext по умолчанию (defense-in-depth + Play);
+    2) ограничиваем нативный код тем же правилом.
+
+  Исключение — ip-api.com: бесплатный тариф работает только по http,
+  передаётся лишь публичный IP сервера (не секреты). Используется в
+  NativeExtensions.kt для гео-лукапа. cleartext тут осознанный компромисс.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ip-api.com</domain>
+    </domain-config>
+</network-security-config>

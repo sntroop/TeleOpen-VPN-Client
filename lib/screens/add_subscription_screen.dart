@@ -159,7 +159,7 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
     // 1) Пробуем как MTProto-код: GET /v1/mtproto/<code>
     try {
       final mtUrl = input.contains('/v1/mtproto/')
-          ? (input.startsWith('http') ? input : 'http://$input')
+          ? (input.startsWith('http') ? input : 'https://$input')
           : '$kApiBase/v1/mtproto/$code';
       final resp = await http.get(Uri.parse(mtUrl))
           .timeout(const Duration(seconds: 10));
@@ -198,7 +198,7 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
     // 2) Пробуем как VPN-подписку: /sub/<code>
     try {
       final url = input.contains('://') || input.contains(kApiBase.split('://').last)
-          ? (input.startsWith('http') ? input : 'http://$input')
+          ? (input.startsWith('http') ? input : 'https://$input')
           : '$kApiBase/sub/$code';
       final result = await SubscriptionLoader.load(url);
       if (!mounted) return;
@@ -590,7 +590,7 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
         IosField(
           controller: _teleopenCtrl,
           label: 'Код или ссылка',
-          placeholder: 'ABC123  или  http://93.152…/v1/mtproto/ABC123',
+          placeholder: 'ABC123  или  https://teleopen.space/v1/mtproto/ABC123',
           keyboardType: TextInputType.text,
         ),
         const SizedBox(height: 10),

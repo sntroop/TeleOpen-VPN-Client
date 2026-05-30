@@ -17,6 +17,7 @@ library app_state;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,12 +25,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../vpn_bridge.dart';
 import '../models/vpn_node.dart';
 import '../models/per_app_proxy.dart';
+import '../models/per_app_preset.dart';
 import '../models/mtproto_proxy.dart';
 import '../models/market.dart';
 import '../logic/parsers.dart';
 import '../logic/subscriptions.dart';
 import '../logic/crash_log.dart';
 import '../logic/ping.dart';
+import '../logic/connectivity_probe.dart';
+import '../logic/failover.dart';
 import '../logic/hysteria2.dart';
 import '../logic/market_api.dart';
 import '../logic/secure_store.dart';
@@ -46,6 +50,7 @@ part 'app_state_user.dart';
 part 'app_state_connection.dart';
 part 'app_state_subscriptions.dart';
 part 'app_state_ping.dart';
+part 'app_state_failover.dart';
 
 /// Базовый класс: держит все поля и базовый жизненный цикл (таймер, dispose).
 /// Доменная логика подмешивается mixin'ами ниже (все — `on AppStateBase`,
@@ -61,6 +66,7 @@ abstract class AppStateBase extends ChangeNotifier {
   Set<String> favoriteIds = {};
   AppSettings settings;
   PerAppProxySettings perApp;
+  List<PerAppPreset> perAppPresets = [];
   TgUser? currentUser;
   Duration connectionDuration = Duration.zero;
   VpnStats currentStats = VpnStats.zero;
@@ -74,6 +80,17 @@ abstract class AppStateBase extends ChangeNotifier {
 
   // ═════ Пинг ═════
   Timer? _pingNotifyTimer;
+
+  // ═════ Проактивная проба связи ═════
+  Timer? _probeTimer;
+  bool _probeInFlight = false;
+  final ProbeDecider _probeDecider = ProbeDecider();
+  static const Duration _probeInterval = Duration(seconds: 25);
+
+  // ═════ Failover ═════
+  // Контроллер живёт в базе, чтобы и AppStateConnection, и AppStateFailover
+  // (которые не видят друг друга напрямую) работали с одним состоянием.
+  final FailoverController _failover = FailoverController();
 
   AppStateBase(this.prefs)
       : settings = AppSettings.fromPrefs(prefs),
@@ -105,16 +122,70 @@ abstract class AppStateBase extends ChangeNotifier {
     connectionDuration = Duration.zero;
   }
 
+  // ── Проактивная проба связи ──────────────────────────────────────────────
+
+  void _startProbe() {
+    _probeDecider.reset();
+    _probeTimer?.cancel();
+    _probeTimer = Timer.periodic(_probeInterval, (_) => _runProbe());
+  }
+
+  void _stopProbe() {
+    _probeTimer?.cancel();
+    _probeTimer = null;
+    _probeInFlight = false;
+    _probeDecider.reset();
+  }
+
+  Future<void> _runProbe() async {
+    if (_probeInFlight) return; // throttle: не накладываем пробы
+    if (status != VpnStatus.connected) return;
+    final node = activeNode;
+    if (node == null) return;
+
+    _probeInFlight = true;
+    try {
+      final alive = await _probeOnce(node);
+      final shouldAct = _probeDecider.recordResult(alive);
+      if (shouldAct) _onConnectivityLost();
+    } finally {
+      _probeInFlight = false;
+    }
+  }
+
+  /// Одна проба: TCP до ноды ИЛИ успешный DNS-резолв = связь жива.
+  Future<bool> _probeOnce(VpnNode node) async {
+    final tcp = await TcpPing.ping(node.address, node.port,
+        timeout: const Duration(seconds: 3));
+    if (tcp != null) return true;
+    // TCP до ноды мог не пройти (UDP-протоколы, фильтрация порта) — проверим
+    // фактический выход в сеть через DNS-резолв нейтрального домена.
+    try {
+      final r = await InternetAddress.lookup('cloudflare.com')
+          .timeout(const Duration(seconds: 3));
+      return r.isNotEmpty && r.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Связь подтверждённо мертва (порог промахов достигнут).
+  /// Реализуется в AppStateFailover; базовая реализация — no-op.
+  void _onConnectivityLost() {}
+
   // ── Методы, реализуемые доменными mixin'ами ──────────────────────────────
   // Объявлены здесь абстрактно, чтобы один mixin мог вызвать метод другого
   // (mixin'ы видят только AppStateBase, но не друг друга напрямую).
   void _saveGroups();                                          // AppStateGroups
   Future<void> disconnect();                                   // AppStateConnection
+  Future<void> connect(VpnNode node);                          // AppStateConnection
   void addMtProtoProxy(MtProtoProxy proxy, {String? toGroupId}); // AppStateMtProto
+  Future<void> _tryFailover({required String failedId});       // AppStateFailover
 
   @override
   void dispose() {
     _timer?.cancel();
+    _probeTimer?.cancel();
     bridge.dispose();
     super.dispose();
   }
@@ -127,12 +198,14 @@ class AppState extends AppStateBase
         AppStateUser,
         AppStateConnection,
         AppStateSubscriptions,
-        AppStatePing {
+        AppStatePing,
+        AppStateFailover {
   AppState(super.prefs) {
     _loadFavorites();
     _loadGroups();
     _loadMtProtoGroups();
     _loadUser();
+    _loadPerAppPresets();
     _initBridge();
     if (settings.autoConnect) _autoConnect();
   }
@@ -144,23 +217,32 @@ class AppState extends AppStateBase
   Future<void> _initBridge() async {
     await bridge.init(
       onStatus: (s) {
-        final newStatus = switch (s.toUpperCase()) {
-          'CONNECTING' => VpnStatus.connecting,
-          'CONNECTED'  => VpnStatus.connected,
-          _            => VpnStatus.stopped,
-        };
+        final ev = parseNativeStatus(s);
+        final newStatus = ev.status;
         if (status != newStatus) {
           status = newStatus;
           if (newStatus == VpnStatus.connected) {
             _startTimer();
             _sessionStart = DateTime.now();
+            _startProbe();
+            _resetFailover(); // успешная сессия → новый чистый эпизод
           } else {
             // Сессия уже сохранена в disconnect() — просто чистим
             _sessionStart = null;
             _stopTimer();
+            _stopProbe();
             currentStats = VpnStats.zero;
           }
           notifyListeners();
+        }
+        // Внезапный обрыв (натив прислал DROPPED) → пробуем failover,
+        // даже если статус формально уже был не connected.
+        if (ev.unexpectedDrop) {
+          final id = activeNode?.id;
+          if (id != null) {
+            // ignore: discarded_futures
+            _tryFailover(failedId: id);
+          }
         }
       },
       onStats: (s) {

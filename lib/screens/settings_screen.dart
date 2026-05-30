@@ -8,6 +8,7 @@ library settings_screen;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../ios_theme.dart';
 import '../main.dart';
@@ -15,7 +16,7 @@ import 'log_screen.dart';
 import 'world_map_screen.dart';
 import 'per_app_proxy_screen.dart';
 import 'dns_screen.dart';
-import 'warp_screen.dart';
+// import 'warp_screen.dart'; // WARP скрыт до реализации (см. ниже)
 import 'tls_tricks_screen.dart';
 import 'diagnostics_screen.dart';
 import 'author_panel_screen.dart';
@@ -29,6 +30,7 @@ import 'dns_leak_test_screen.dart';
 import 'proxy_visibility_screen.dart';
 import 'statistics_screen.dart';
 import 'fix_server_screen.dart';
+import 'privacy_screen.dart';
 
 part 'settings/parts.dart';
 
@@ -42,6 +44,9 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // Локальная копия настроек — инициализируется из AppState в initState.
   late AppSettings _s;
+
+  // Версия приложения, читается из нативки (канал space.teleopen.app/native).
+  String _appVersion = '';
 
   static const _balancerStrategies = <String>[
     'Round robin',
@@ -76,6 +81,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _s = AppSettings(
       killSwitch:         appSettings.killSwitch,
       autoConnect:        appSettings.autoConnect,
+      autoFailover:       appSettings.autoFailover,
       dns:                appSettings.dns,
       packetAnalysis:     appSettings.packetAnalysis,
       useMux:             appSettings.useMux,
@@ -86,6 +92,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       resolveDestination: appSettings.resolveDestination,
       ipv6Route:          appSettings.ipv6Route,
     );
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      const channel = MethodChannel('space.teleopen.app/native');
+      final name = await channel.invokeMethod<String>('getAppVersionName');
+      final code = await channel.invokeMethod<int>('getAppVersionCode');
+      if (!mounted) return;
+      setState(() {
+        _appVersion = [
+          if (name != null && name.isNotEmpty) name,
+          if (code != null) '($code)',
+        ].join(' ');
+      });
+    } catch (_) {
+      // нативка недоступна (напр. тесты) — оставляем пусто
+    }
   }
 
   /// Применяет локальное изменение и сохраняет в AppState + SharedPreferences.
@@ -151,6 +175,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: IosSwitch(
                       value: _s.autoConnect,
                       onChanged: (v) => _update((s) => s.autoConnect = v),
+                    ),
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.arrow_2_circlepath,
+                    leadingIconBg: c.blue,
+                    title: 'Авто-переключение сервера',
+                    subtitle: 'Сменить сервер, если текущий не отвечает',
+                    trailing: IosSwitch(
+                      value: _s.autoFailover,
+                      onChanged: (v) => _update((s) => s.autoFailover = v),
                     ),
                   ),
                   IosListTile(
@@ -302,16 +336,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       builder: (_) => const DnsScreen(),
                     )),
                   ),
-                  IosListTile(
-                    leadingIcon: CupertinoIcons.cloud,
-                    leadingIconBg: c.orange,
-                    title: 'WARP',
-                    subtitle: 'Cloudflare WARP и шум',
-                    showChevron: true,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const WarpScreen(),
-                    )),
-                  ),
+                  // WARP скрыт до реализации нативной генерации конфигурации
+                  // (см. warp_screen.dart _generateConfig — пока no-op).
+                  // Не показываем мёртвую кнопку в проде.
+                  // IosListTile(
+                  //   leadingIcon: CupertinoIcons.cloud,
+                  //   leadingIconBg: c.orange,
+                  //   title: 'WARP',
+                  //   subtitle: 'Cloudflare WARP и шум',
+                  //   showChevron: true,
+                  //   onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  //     builder: (_) => const WarpScreen(),
+                  //   )),
+                  // ),
                   IosListTile(
                     leadingIcon: CupertinoIcons.scissors,
                     leadingIconBg: c.purple,
@@ -456,7 +493,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     leadingIcon: CupertinoIcons.info,
                     leadingIconBg: c.fill,
                     title: 'Версия',
-                    trailingText: '1.0.0',
+                    trailingText: _appVersion.isEmpty ? '—' : _appVersion,
+                  ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.lock_shield_fill,
+                    leadingIconBg: c.blue,
+                    title: 'Безопасность',
+                    showChevron: true,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const PrivacyScreen(),
+                    )),
                   ),
                   IosListTile(
                     leadingIcon: CupertinoIcons.person_2_fill,

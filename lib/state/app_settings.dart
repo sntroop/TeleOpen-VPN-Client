@@ -12,6 +12,7 @@ class AppSettings {
   // ── Соединение ──────────────────────────────────────────────────────────
   bool killSwitch;
   bool autoConnect;
+  bool autoFailover;
   String dns;
 
   // ── Продвинутое ─────────────────────────────────────────────────────────
@@ -122,6 +123,7 @@ class AppSettings {
   AppSettings({
     this.killSwitch = false,
     this.autoConnect = false,
+    this.autoFailover = false,
     this.dns = '1.1.1.1',
     this.packetAnalysis = true,
     this.useMux = false,
@@ -224,6 +226,7 @@ class AppSettings {
   /// рабочая копия, не мутирующая глобальный AppState до явного save.
   AppSettings.copy(AppSettings o)
       : killSwitch = o.killSwitch,
+        autoFailover = o.autoFailover,
         autoConnect = o.autoConnect,
         dns = o.dns,
         packetAnalysis = o.packetAnalysis,
@@ -311,6 +314,7 @@ class AppSettings {
   static AppSettings fromPrefs(SharedPreferences p) => AppSettings(
         killSwitch:         p.getBool('s_killSwitch') ?? false,
         autoConnect:        p.getBool('s_autoConnect') ?? false,
+        autoFailover:       p.getBool('s_autoFailover') ?? false,
         dns:                p.getString('s_dns') ?? '1.1.1.1',
         packetAnalysis:     p.getBool('s_packetAnalysis') ?? true,
         useMux:             p.getBool('s_useMux') ?? false,
@@ -412,6 +416,7 @@ class AppSettings {
   void save(SharedPreferences p) {
     p.setBool('s_killSwitch', killSwitch);
     p.setBool('s_autoConnect', autoConnect);
+    p.setBool('s_autoFailover', autoFailover);
     p.setString('s_dns', dns);
     p.setBool('s_packetAnalysis', packetAnalysis);
     p.setBool('s_useMux', useMux);
@@ -522,6 +527,7 @@ class AppSettings {
     // base
     m['kill_switch'] = killSwitch;
     m['auto_connect'] = autoConnect;
+    m['auto_failover'] = autoFailover;
     m['dns_system'] = dns;
     m['packet_analysis'] = packetAnalysis;
     m['use_mux'] = useMux;

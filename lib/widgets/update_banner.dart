@@ -148,6 +148,32 @@ class UpdateDialog extends StatelessWidget {
                       'Ошибка: ${updater.error}',
                       style: t.textStyles.footnote.copyWith(color: c.red),
                     ),
+                    // Конфликт подписи (смена ключа) — единственный путь это
+                    // удалить старую версию и поставить новую заново.
+                    if (updater.needsReinstall) ...[
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => updater.uninstallForReinstall(),
+                          icon: Icon(Icons.delete_outline, color: c.red, size: 18),
+                          label: Text(
+                            'Удалить старую версию',
+                            style: TextStyle(color: c.red),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: c.red.withValues(alpha: 0.5)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'После удаления установите приложение заново — '
+                        'это разовая операция из-за обновления ключа подписи.',
+                        style: t.textStyles.footnote
+                            .copyWith(color: c.textSecondary),
+                      ),
+                    ],
                   ],
                 ],
               ),

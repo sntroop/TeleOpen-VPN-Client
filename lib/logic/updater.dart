@@ -89,6 +89,7 @@ class UpdaterService extends ChangeNotifier {
   bool downloading = false;
   double progress = 0;          // 0..1
   String? error;                // последняя ошибка (для UI)
+  bool needsReinstall = false;  // true = конфликт подписи, нужна переустановка
   bool ready = false;           // init() прошёл
 
   final FlutterLocalNotificationsPlugin _notif =
@@ -212,6 +213,17 @@ class UpdaterService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Открыть системный диалог удаления приложения. Вызывается из UI, когда
+  /// установка провалилась с UPDATE_INCOMPATIBLE (конфликт подписи): юзер
+  /// удаляет старую версию, после чего может поставить новую заново.
+  Future<void> uninstallForReinstall() async {
+    try {
+      await _channel.invokeMethod('uninstallSelf');
+    } catch (e) {
+      debugPrint('Updater.uninstallForReinstall: $e');
+    }
+  }
+
   /// Качаем APK → проверяем sha256 → передаём в нативку для установки.
   Future<void> downloadAndInstall() async {
     final info = available;
@@ -221,6 +233,7 @@ class UpdaterService extends ChangeNotifier {
     downloading = true;
     progress = 0;
     error = null;
+    needsReinstall = false;
     notifyListeners();
 
     File? file;
@@ -280,10 +293,26 @@ class UpdaterService extends ChangeNotifier {
       notifyListeners();
 
       // Передаём нативке. Дальше юзер увидит системный экран установки.
+      // На стороне Kotlin это PackageInstaller: result вернётся ПОЗЖЕ, с
+      // реальным итогом установки (успех / конкретная ошибка), а не сразу.
       await _channel.invokeMethod('installApk', {'path': path});
     } on PlatformException catch (e) {
-      // Ожидаемый случай: NEED_PERMISSION — нативка уже открыла настройки.
-      error = e.message ?? e.code;
+      // Разбираем коды, которые шлёт MainActivity.installApk:
+      //   NEED_PERMISSION     — нативка уже открыла настройки, юзеру надо
+      //                         разрешить установку и повторить «Обновить».
+      //   UPDATE_INCOMPATIBLE — конфликт подписи: установлена версия с другим
+      //                         ключом (после смены keystore). Нужна
+      //                         переустановка — поднимаем флаг для UI.
+      //   BUSY/INSTALL_*      — прочие ошибки, показываем текст как есть.
+      switch (e.code) {
+        case 'UPDATE_INCOMPATIBLE':
+          needsReinstall = true;
+          error = e.message ??
+              'Удалите старую версию приложения и установите заново.';
+          break;
+        default:
+          error = e.message ?? e.code;
+      }
       debugPrint('Updater.install platform error: ${e.code} ${e.message}');
     } catch (e) {
       error = e.toString();

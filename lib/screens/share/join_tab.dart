@@ -26,8 +26,8 @@ class _JoinTabState extends State<_JoinTab> {
     super.dispose();
   }
 
-  /// Из строки вида "ABC123", "http://93.152.224.67:8000/sub/ABC123"
-  /// или "93.152.224.67:8000/sub/ABC123" извлекаем чистый код.
+  /// Из строки вида "ABC123", "https://teleopen.space/sub/ABC123"
+  /// или "teleopen.space/sub/ABC123" извлекаем чистый код.
   String _extractCode(String input) {
     final trimmed = input.trim().toUpperCase();
     // Если уже 6-значный код
@@ -55,7 +55,7 @@ class _JoinTabState extends State<_JoinTab> {
       //    Если ответ содержит поле "proxies" — это MTProto-группа.
       try {
         final mtUrl = input.contains('/v1/mtproto/')
-            ? (input.startsWith('http') ? input : 'http://$input')
+            ? (input.startsWith('http') ? input : 'https://$input')
             : '$kApiBase/v1/mtproto/$code';
         final resp = await http.get(Uri.parse(mtUrl))
             .timeout(const Duration(seconds: 10));
@@ -95,7 +95,7 @@ class _JoinTabState extends State<_JoinTab> {
 
       // 2) Пробуем как VPN-подписку (/sub/<code>)
       final url = input.contains('://') || input.contains(kApiBase.split('://').last)
-        ? (input.startsWith('http') ? input : 'http://$input')
+        ? (input.startsWith('http') ? input : 'https://$input')
         : '$kApiBase/sub/$code';
 
       final result = await SubscriptionLoader.load(url);
@@ -138,7 +138,7 @@ class _JoinTabState extends State<_JoinTab> {
           child: IosField(
             controller: _ctrl,
             label: 'Код или ссылка',
-            placeholder: 'ABC123  или  http://...',
+            placeholder: 'ABC123  или  https://...',
             keyboardType: TextInputType.text,
           ),
         ),

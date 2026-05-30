@@ -1,7 +1,7 @@
 // lib/logic/market_api.dart
 //
 // HTTP-клиент маркетплейса.
-// 1-в-1 с FastAPI бэкендом http://93.152.224.67:8000
+// 1-в-1 с FastAPI бэкендом (kApiBase).
 
 import 'dart:async';
 import 'dart:convert';

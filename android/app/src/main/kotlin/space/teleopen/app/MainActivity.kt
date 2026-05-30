@@ -1,18 +1,24 @@
 package space.teleopen.app
 
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInfo
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
-import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
 
@@ -21,6 +27,9 @@ class MainActivity : FlutterActivity() {
         const val EVENT_CHANNEL          = "space.teleopen.app/vpn_status"
         const val VPN_PERMISSION_REQUEST = 1001
         const val GEO_FILE_PICK_REQUEST  = 1002
+        // Action для PendingIntent, который PackageInstaller дёргает с
+        // результатом установки (см. installApk + installResultReceiver).
+        const val ACTION_INSTALL_STATUS  = "space.teleopen.app.INSTALL_STATUS"
     }
 
     private var pendingResult: MethodChannel.Result? = null
@@ -30,13 +39,140 @@ class MainActivity : FlutterActivity() {
     private var pendingPort: Int = 10900
     private var pendingPerAppEnabled: Boolean = false
     private var pendingAllowedPackages: List<String> = emptyList()
+    private var pendingKillSwitch: Boolean = false
 
     // Для импорта geo-файла: ждём результата SAF picker
     private var pendingGeoResult: MethodChannel.Result? = null
     private var pendingGeoKind: String = ""
 
+    // Установка APK через PackageInstaller асинхронна: commit() возвращается
+    // сразу, а реальный итог (успех/ошибка/нужно подтверждение) прилетает
+    // позже бродкастом. Поэтому держим Result от MethodChannel здесь, пока
+    // не получим финальный статус, и регистрируем ресивер.
+    private var pendingInstallResult: MethodChannel.Result? = null
+    private var installReceiverRegistered = false
+
+    private val installResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_INSTALL_STATUS) return
+            val status = intent.getIntExtra(
+                PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+            val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+
+            when (status) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    // Системе нужно подтверждение юзера — запускаем диалог.
+                    @Suppress("DEPRECATION")
+                    val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                    if (confirm != null) {
+                        confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try {
+                            startActivity(confirm)
+                        } catch (t: Throwable) {
+                            finishInstall(false, "INSTALL_ERR",
+                                "Не удалось открыть диалог установки: ${t.message}")
+                        }
+                    } else {
+                        finishInstall(false, "INSTALL_ERR",
+                            "Система не вернула диалог подтверждения")
+                    }
+                    // Финальный статус (успех/ошибка) прилетит ещё одним бродкастом.
+                }
+                PackageInstaller.STATUS_SUCCESS -> {
+                    finishInstall(true, null, null)
+                }
+                else -> {
+                    // Любая ошибка установки. Распознаём конфликт подписи —
+                    // он бывает при обновлении поверх версии, подписанной
+                    // другим ключом (после смены keystore).
+                    val incompatible = msg?.contains(
+                        "INSTALL_FAILED_UPDATE_INCOMPATIBLE", ignoreCase = true) == true ||
+                        msg?.contains("signatures do not match", ignoreCase = true) == true
+                    if (incompatible) {
+                        finishInstall(false, "UPDATE_INCOMPATIBLE",
+                            "Установлена версия с другим ключом подписи. " +
+                            "Удалите старое приложение и установите заново.")
+                    } else {
+                        finishInstall(false, "INSTALL_FAILED",
+                            msg ?: "Установка не выполнена (код $status)")
+                    }
+                }
+            }
+        }
+    }
+
+    /** Отдать финальный результат установки в Dart ровно один раз. */
+    private fun finishInstall(ok: Boolean, errorCode: String?, errorMsg: String?) {
+        val r = pendingInstallResult ?: return
+        pendingInstallResult = null
+        runOnUiThread {
+            if (ok) r.success(true)
+            else r.error(errorCode ?: "INSTALL_ERR", errorMsg, null)
+        }
+    }
+
+    /**
+     * Установка APK через PackageInstaller. В отличие от старого
+     * Intent.ACTION_VIEW, здесь система присылает РЕАЛЬНЫЙ код результата
+     * (успех / конкретная ошибка / нужно подтверждение) бродкастом на
+     * ACTION_INSTALL_STATUS → installResultReceiver. Тяжёлое копирование APK
+     * в сессию делаем в фоновом потоке.
+     */
+    private fun installViaPackageInstaller(apk: File) {
+        Thread {
+            var session: PackageInstaller.Session? = null
+            try {
+                val installer = packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(
+                    PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+                val sessionId = installer.createSession(params)
+                session = installer.openSession(sessionId)
+
+                apk.inputStream().use { input ->
+                    session.openWrite("teleopen.apk", 0, apk.length()).use { out ->
+                        input.copyTo(out, 256 * 1024)
+                        session.fsync(out)
+                    }
+                }
+
+                // PendingIntent, по которому система пришлёт результат. На S+
+                // (API 31) обязателен флаг mutable — система дописывает в Intent
+                // свои extra (статус, confirm-Intent).
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                val statusIntent = Intent(ACTION_INSTALL_STATUS).setPackage(packageName)
+                val pi = PendingIntent.getBroadcast(this, sessionId, statusIntent, flags)
+
+                session.commit(pi.intentSender)
+                // Дальше результат прилетит в installResultReceiver.
+            } catch (t: Throwable) {
+                try { session?.abandon() } catch (_: Throwable) {}
+                HysteriaTunVpnService.flogE("pkgInstaller", t.message ?: "?", t)
+                finishInstall(false, "INSTALL_ERR",
+                    "Не удалось начать установку: ${t.message}")
+            } finally {
+                try { session?.close() } catch (_: Throwable) {}
+            }
+        }.start()
+    }
+
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Ресивер результатов PackageInstaller. RECEIVER_NOT_EXPORTED — статус
+        // приходит только от системного PackageInstaller внутри нашего процесса.
+        if (!installReceiverRegistered) {
+            ContextCompat.registerReceiver(
+                this,
+                installResultReceiver,
+                IntentFilter(ACTION_INSTALL_STATUS),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            installReceiverRegistered = true
+        }
 
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
@@ -59,10 +195,12 @@ class MainActivity : FlutterActivity() {
                         val remark  = call.argument<String>("remark") ?: "TeleOpen"
                         val perApp  = call.argument<Boolean>("perAppEnabled") ?: false
                         val allowed = call.argument<List<String>>("allowedPackages") ?: emptyList()
+                        val killSw  = call.argument<Boolean>("killSwitch") ?: false
                         requestPermissionAndStart(result,
                             HysteriaTunVpnService.ACTION_START_HYSTERIA,
                             remark = remark, port = port,
-                            perAppEnabled = perApp, allowedPackages = allowed)
+                            perAppEnabled = perApp, allowedPackages = allowed,
+                            killSwitch = killSw)
                     }
 
                     // vless/vmess/trojan → наш TUN сервис с CoreController
@@ -71,10 +209,12 @@ class MainActivity : FlutterActivity() {
                         val remark  = call.argument<String>("remark") ?: "TeleOpen"
                         val perApp  = call.argument<Boolean>("perAppEnabled") ?: false
                         val allowed = call.argument<List<String>>("allowedPackages") ?: emptyList()
+                        val killSw  = call.argument<Boolean>("killSwitch") ?: false
                         requestPermissionAndStart(result,
                             HysteriaTunVpnService.ACTION_START_V2RAY,
                             remark = remark, config = config,
-                            perAppEnabled = perApp, allowedPackages = allowed)
+                            perAppEnabled = perApp, allowedPackages = allowed,
+                            killSwitch = killSw)
                     }
 
                     "stopVpn" -> {
@@ -230,6 +370,19 @@ class MainActivity : FlutterActivity() {
                     }
 
                     // ═════════════════════════════════════════════════════════
+                    // Доверие: SHA-256 сертификата, которым подписан установленный APK.
+                    // Позволяет юзеру сверить, что приложение подписано прод-ключом.
+                    // ═════════════════════════════════════════════════════════
+
+                    "getSigningCertSha256" -> {
+                        try {
+                            result.success(signingCertSha256())
+                        } catch (t: Throwable) {
+                            result.error("CERT_ERR", t.message, null)
+                        }
+                    }
+
+                    // ═════════════════════════════════════════════════════════
                     // In-app self-update: чтение версии и установка скачанного APK
                     // ═════════════════════════════════════════════════════════
 
@@ -255,6 +408,23 @@ class MainActivity : FlutterActivity() {
                             result.success(packageInfoCompat().versionName ?: "")
                         } catch (t: Throwable) {
                             result.error("VERSION_ERR", t.message, null)
+                        }
+                    }
+
+                    // Открыть системный диалог удаления НАШЕГО приложения.
+                    // Нужен при конфликте подписи (смена keystore): юзер удаляет
+                    // старую версию, затем ставит новую заново.
+                    "uninstallSelf" -> {
+                        try {
+                            @Suppress("DEPRECATION")
+                            val intent = Intent(
+                                Intent.ACTION_DELETE,
+                                Uri.parse("package:$packageName")
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (t: Throwable) {
+                            result.error("UNINSTALL_ERR", t.message, null)
                         }
                     }
 
@@ -291,19 +461,18 @@ class MainActivity : FlutterActivity() {
                                 )
                             }
 
-                            val authority = "$packageName.fileprovider"
-                            val uri: Uri = FileProvider.getUriForFile(this, authority, file)
-
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(uri, "application/vnd.android.package-archive")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            // Если уже идёт установка — не запускаем вторую.
+                            if (pendingInstallResult != null) {
+                                return@setMethodCallHandler result.error(
+                                    "BUSY", "Установка уже выполняется", null)
                             }
-                            startActivity(intent)
-                            result.success(true)
+                            // result разрешим позже — в installResultReceiver,
+                            // когда система вернёт реальный итог установки.
+                            pendingInstallResult = result
+                            installViaPackageInstaller(file)
                         } catch (t: Throwable) {
                             HysteriaTunVpnService.flogE("installApk", t.message ?: "?", t)
-                            result.error("INSTALL_ERR", t.message, null)
+                            finishInstall(false, "INSTALL_ERR", t.message)
                         }
                     }
 
@@ -320,6 +489,32 @@ class MainActivity : FlutterActivity() {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
     }
 
+    /**
+     * SHA-256 (hex, lowercase) сертификата, которым подписан установленный APK.
+     * На API 28+ читаем через GET_SIGNING_CERTIFICATES (apkContentsSigners),
+     * на старых — через устаревший GET_SIGNATURES.
+     */
+    private fun signingCertSha256(): String {
+        val sig: ByteArray = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val info = packageManager.getPackageInfo(
+                packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            val signers = info.signingInfo?.apkContentsSigners
+                ?: throw IllegalStateException("no signingInfo")
+            if (signers.isEmpty()) throw IllegalStateException("no signers")
+            signers[0].toByteArray()
+        } else {
+            @Suppress("DEPRECATION")
+            val info = packageManager.getPackageInfo(
+                packageName, PackageManager.GET_SIGNATURES)
+            @Suppress("DEPRECATION")
+            val sigs = info.signatures ?: throw IllegalStateException("no signatures")
+            if (sigs.isEmpty()) throw IllegalStateException("no signatures")
+            sigs[0].toByteArray()
+        }
+        val digest = MessageDigest.getInstance("SHA-256").digest(sig)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
     private fun requestPermissionAndStart(
         result: MethodChannel.Result,
         action: String,
@@ -327,7 +522,8 @@ class MainActivity : FlutterActivity() {
         config: String = "",
         port: Int = 10900,
         perAppEnabled: Boolean = false,
-        allowedPackages: List<String> = emptyList()
+        allowedPackages: List<String> = emptyList(),
+        killSwitch: Boolean = false
     ) {
         val prepare = VpnService.prepare(this)
         if (prepare != null) {
@@ -338,10 +534,11 @@ class MainActivity : FlutterActivity() {
             pendingPort   = port
             pendingPerAppEnabled = perAppEnabled
             pendingAllowedPackages = allowedPackages
+            pendingKillSwitch = killSwitch
             @Suppress("DEPRECATION")
             startActivityForResult(prepare, VPN_PERMISSION_REQUEST)
         } else {
-            doStart(action, remark, config, port, perAppEnabled, allowedPackages)
+            doStart(action, remark, config, port, perAppEnabled, allowedPackages, killSwitch)
             result.success("ok")
         }
     }
@@ -355,7 +552,7 @@ class MainActivity : FlutterActivity() {
                 pendingResult = null
                 if (resultCode == RESULT_OK) {
                     doStart(pendingAction, pendingRemark, pendingConfig, pendingPort,
-                        pendingPerAppEnabled, pendingAllowedPackages)
+                        pendingPerAppEnabled, pendingAllowedPackages, pendingKillSwitch)
                     pending?.success("ok")
                 } else {
                     pending?.error("VPN_PERMISSION_DENIED", "Пользователь отказал", null)
@@ -387,7 +584,8 @@ class MainActivity : FlutterActivity() {
     private fun doStart(
         action: String, remark: String, config: String, port: Int,
         perAppEnabled: Boolean = false,
-        allowedPackages: List<String> = emptyList()
+        allowedPackages: List<String> = emptyList(),
+        killSwitch: Boolean = false
     ) {
         startService(Intent(this, HysteriaTunVpnService::class.java).apply {
             this.action = action
@@ -395,10 +593,19 @@ class MainActivity : FlutterActivity() {
             if (config.isNotEmpty()) putExtra(HysteriaTunVpnService.EXTRA_CONFIG, config)
             putExtra(HysteriaTunVpnService.EXTRA_SOCKS5_PORT, port)
             putExtra(HysteriaTunVpnService.EXTRA_PERAPP_ENABLED, perAppEnabled)
+            putExtra(HysteriaTunVpnService.EXTRA_KILL_SWITCH, killSwitch)
             putStringArrayListExtra(
                 HysteriaTunVpnService.EXTRA_ALLOWED_PACKAGES,
                 ArrayList(allowedPackages)
             )
         })
+    }
+
+    override fun onDestroy() {
+        if (installReceiverRegistered) {
+            try { unregisterReceiver(installResultReceiver) } catch (_: Throwable) {}
+            installReceiverRegistered = false
+        }
+        super.onDestroy()
     }
 }

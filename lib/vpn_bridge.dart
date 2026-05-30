@@ -108,6 +108,7 @@ class VpnBridge {
     String remark = 'TeleOpen',
     bool perAppEnabled = false,
     List<String> allowedPackages = const [],
+    bool killSwitch = false,
   }) async {
     try {
       await _method.invokeMethod('startVpn', {
@@ -115,6 +116,7 @@ class VpnBridge {
         'remark': remark,
         'perAppEnabled': perAppEnabled,
         'allowedPackages': allowedPackages,
+        'killSwitch': killSwitch,
       });
       return true;
     } on PlatformException catch (e) {
@@ -132,6 +134,7 @@ class VpnBridge {
     required String remark,
     bool perAppEnabled = false,
     List<String> allowedPackages = const [],
+    bool killSwitch = false,
   }) async {
     try {
       await _method.invokeMethod('startV2RayVpn', {
@@ -139,6 +142,7 @@ class VpnBridge {
         'remark': remark,
         'perAppEnabled': perAppEnabled,
         'allowedPackages': allowedPackages,
+        'killSwitch': killSwitch,
       });
       return true;
     } on PlatformException catch (e) {

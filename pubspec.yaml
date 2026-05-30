@@ -1,7 +1,7 @@
 name: my_vpn
 description: "TeleOpen VPN Project"
 publish_to: 'none'
-version: 1.0.4+5002
+version: 1.0.8+5006
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -24,11 +24,10 @@ dependencies:
   flutter_local_notifications: ^17.0.0
   path_provider: ^2.1.4   # <-- вот это
   cupertino_icons: ^1.0.9
-  # Готовый speed-тест (форк с поддержкой AGP 8+, обновляется в 2025).
-  # Внутри использует Fast.com (Netflix) или Ookla. Заменяет нашу
-  # самописную реализацию через cloudflare, которая через VPN-TUN
-  # стабильно роняла DNS-резолв и зависала на больших стримах.
-  flutter_internet_speed_test_pro: ^1.5.1
+  # Тест скорости — самописный на dart:io через Cloudflare (https), см.
+  # lib/logic/speed_benchmark.dart. Раньше был плагин
+  # flutter_internet_speed_test_pro, но он зависал на 0 (заброшенная нативка
+  # fr.bmartel.speedtest + cleartext-фолбэк, который рубил network-config).
   # Для проверки sha256 при in-app self-update (logic/updater.dart):
   # хэш скачанного APK сверяется с тем, что отдал сервер, прежде чем
   # передавать файл системному установщику.

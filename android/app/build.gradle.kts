@@ -48,6 +48,15 @@ android {
                 keyPassword = keystoreProperties["keyPassword"] as String
                 storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["storePassword"] as String
+                // Явно включаем ВСЕ схемы подписи. По умолчанию AGP для нашей
+                // конфигурации выдавал v2-only — а часть OEM-установщиков и
+                // путь через Play Protect при sideload опираются на v1 (JAR)
+                // как fallback. Без v1 пакет отвергается с немым «приложение
+                // не установлено» даже на чистом устройстве. v3 — корректная
+                // поддержка на новых Android + готовность к ротации ключа.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }

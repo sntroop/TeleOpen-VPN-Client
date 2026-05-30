@@ -34,6 +34,7 @@ class HysteriaTunVpnService : VpnService() {
         const val EXTRA_SOCKS5_PORT = "socks5_port"
         const val EXTRA_PERAPP_ENABLED  = "perapp_enabled"
         const val EXTRA_ALLOWED_PACKAGES = "allowed_packages"
+        const val EXTRA_KILL_SWITCH      = "kill_switch"
 
         const val NOTIF_CHANNEL = "vpn_tun_channel"
         const val NOTIF_ID      = 7777
@@ -176,6 +177,12 @@ class HysteriaTunVpnService : VpnService() {
     private var perAppEnabled: Boolean = false
     private var allowedPackages: List<String> = emptyList()
 
+    // Kill-switch: если включён и core упал не по команде пользователя, НЕ рвём
+    // туннель — держим TUN открытым без рабочего ядра, чтобы трафик не утекал
+    // мимо VPN (fail-closed). intentionalStop отличает штатный stopVpn от краха.
+    @Volatile private var killSwitchEnabled: Boolean = false
+    @Volatile private var intentionalStop: Boolean = false
+
     // Статистика трафика
     private var statsThread: Thread? = null
     @Volatile private var statsRunning: Boolean = false
@@ -211,6 +218,8 @@ class HysteriaTunVpnService : VpnService() {
         if (intent.action == ACTION_STOP) {
             // Stop тоже под lifecycleLock и в фоне — иначе при нажатии Stop
             // во время идущего старта главный поток встал бы в ожидании замка (ANR).
+            // Пользователь сам остановил → это штатный стоп, kill-switch НЕ держит туннель.
+            intentionalStop = true
             starting = false
             Thread({
                 synchronized(lifecycleLock) { stopVpn() }
@@ -238,7 +247,9 @@ class HysteriaTunVpnService : VpnService() {
 
         perAppEnabled = intent.getBooleanExtra(EXTRA_PERAPP_ENABLED, false)
         allowedPackages = intent.getStringArrayListExtra(EXTRA_ALLOWED_PACKAGES) ?: emptyList()
-        flog(TAG, "perApp enabled=$perAppEnabled pkgs=${allowedPackages.size}")
+        killSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
+        intentionalStop = false // новый старт → следующий обрыв считается внезапным
+        flog(TAG, "perApp enabled=$perAppEnabled pkgs=${allowedPackages.size} killSwitch=$killSwitchEnabled")
 
         // FGS-контракт: startForeground ДО ухода в фоновый поток, синхронно,
         // чтобы Android точно увидел foreground в течение 5 секунд.
@@ -292,7 +303,8 @@ class HysteriaTunVpnService : VpnService() {
         Log.i(TAG, "startHysteria port=$socks5Port")
         stopInternals()
         // Пауза, чтобы прошлый tun2socks/TUN освободили ресурсы.
-        try { Thread.sleep(600) } catch (_: InterruptedException) {}
+        // Увеличена до 1000ms для надежности (особенно после kill-switch).
+        try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         mode = "hysteria"
 
         // foreground уже поднят в onStartCommand; здесь только строим TUN.
@@ -326,8 +338,8 @@ class HysteriaTunVpnService : VpnService() {
         stopInternals()
         // Даём предыдущему core/TUN полностью освободить ресурсы (stopLoop
         // асинхронен). Без паузы повторный коннект мог наложиться на ещё
-        // живой core. Выполняемся в фоновом потоке — sleep безопасен.
-        try { Thread.sleep(600) } catch (_: InterruptedException) {}
+        // живой core. Увеличена до 1000ms для надежности (особенно после kill-switch).
+        try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         mode = "v2ray"
 
         if (rawConfig.isBlank()) {
@@ -385,8 +397,9 @@ class HysteriaTunVpnService : VpnService() {
                 override fun shutdown(): Long {
                     flog(TAG, "callback.shutdown() — xray просит выключения")
                     if (isRunning) {
-                        pushStatus("STOPPED")
-                        stopSelf()
+                        // Ядро упало не по нашей команде → kill-switch решает,
+                        // рвать туннель или держать blackhole (fail-closed).
+                        handleUnexpectedDeath("xray.shutdown")
                     }
                     return 0L
                 }
@@ -566,6 +579,11 @@ class HysteriaTunVpnService : VpnService() {
                     Log.d(TAG, "tun2socks: $it")
                 }
             } catch (_: Exception) {}
+            // forEachLine вернулся → процесс tun2socks завершился. Если мы при этом
+            // ещё «работаем», значит он умер не по нашей команде → kill-switch.
+            if (isRunning && mode == "hysteria") {
+                handleUnexpectedDeath("tun2socks.exit")
+            }
         }, "tun2socks_log").start()
 
         sendFdToSock(tunFd, sockPath)
@@ -606,6 +624,41 @@ class HysteriaTunVpnService : VpnService() {
         pushStatus("STOPPED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Внезапная смерть ядра (не по команде пользователя). Если kill-switch
+     * выключен — ведём себя как раньше (рвём туннель, STOPPED). Если включён —
+     * закрываем всё корректно, но шлём DROPPED вместо STOPPED, чтобы Dart
+     * показал ошибку и при autoFailover переподключился. Трафик блокируется
+     * тем, что VPN-туннель закрыт, но failover быстро переподключится.
+     */
+    private fun handleUnexpectedDeath(where: String) {
+        if (intentionalStop) {
+            // На самом деле это был штатный стоп, просто колбэк прилетел следом.
+            flog(TAG, "core down at $where but intentionalStop=true — normal stop")
+            return
+        }
+        if (!killSwitchEnabled) {
+            flog(TAG, "core down at $where, killSwitch OFF — tearing down")
+            stopVpn()
+            return
+        }
+        // Kill-switch ON: закрываем всё корректно, чтобы следующий коннект не крашился.
+        // Трафик блокируется короткое время до автоматического переподключения.
+        flog(TAG, "core down at $where, killSwitch ON — closing cleanly for reconnect")
+        isRunning = false
+        stopStatsReporter()
+        try { coreController?.stopLoop() } catch (e: Exception) { Log.w(TAG, "stopLoop: $e") }
+        coreController = null
+        try { tun2socksProcess?.destroy() } catch (_: Exception) {}
+        tun2socksProcess = null
+        // Закрываем TUN корректно, чтобы следующий establish() не конфликтовал
+        closeDetachedFd()
+        try { tunInterface?.close() } catch (_: Exception) {}
+        tunInterface = null
+        try { updateNotification("Переподключение...") } catch (_: Throwable) {}
+        pushStatus("DROPPED")
     }
 
     private fun stopInternals() {
@@ -860,6 +913,16 @@ class HysteriaTunVpnService : VpnService() {
             nm.createNotificationChannel(NotificationChannel(
                 NOTIF_CHANNEL, "TeleOpen VPN", NotificationManager.IMPORTANCE_LOW
             ).apply { setShowBadge(false) })
+        }
+    }
+
+    /** Обновить текст уже показанной foreground-нотификации (kill-switch и т.п.). */
+    private fun updateNotification(text: String) {
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIF_ID, buildNotification(text))
+        } catch (t: Throwable) {
+            flogE(TAG, "updateNotification failed: ${t.message}", t)
         }
     }
 }

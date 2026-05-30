@@ -10,6 +10,7 @@ import 'package:installed_apps/app_info.dart';
 import '../ios_theme.dart';
 import '../main.dart';
 import '../models/per_app_proxy.dart';
+import '../models/per_app_preset.dart';
 import '../logic/crash_log.dart';
 
 class PerAppProxyScreen extends StatefulWidget {
@@ -61,6 +62,64 @@ class _PerAppProxyScreenState extends State<PerAppProxyScreen> {
     AppStateScope.of(context, listen: false).setPerAppProxy(_settings);
   }
 
+  // ── Пресеты ──────────────────────────────────────────────────────────────
+
+  void _applyPreset(PerAppPreset p) {
+    setState(() {
+      _settings = PerAppProxySettings(
+        enabled: true,
+        includedPackages: List<String>.from(p.packages),
+      );
+    });
+    _save();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Применён пресет «${p.name}»'), duration: const Duration(seconds: 1)),
+    );
+  }
+
+  Future<void> _saveCurrentAsPreset() async {
+    if (_settings.includedPackages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала выберите приложения'), duration: Duration(seconds: 1)),
+      );
+      return;
+    }
+    final ctrl = TextEditingController();
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: c.bgSecondary,
+        title: Text('Новый пресет', style: t.textStyles.headline),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          cursorColor: c.textPrimary,
+          decoration: const InputDecoration(hintText: 'Название'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    if (!mounted) return;
+    AppStateScope.of(context, listen: false).savePerAppPreset(
+      PerAppPreset(name: name, packages: List<String>.from(_settings.includedPackages)),
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _deletePreset(PerAppPreset p) {
+    AppStateScope.of(context, listen: false).deletePerAppPreset(p.name);
+    setState(() {});
+  }
+
   List<AppInfo> get _filtered {
     if (_query.isEmpty) return _apps;
     return _apps.where((a) =>
@@ -70,6 +129,81 @@ class _PerAppProxyScreenState extends State<PerAppProxyScreen> {
 
   @override
   void dispose() { _searchCtrl.dispose(); super.dispose(); }
+
+  Widget _buildPresets(IosThemeData t, IosColors c) {
+    final presets = AppStateScope.of(context).perAppPresets;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+      child: SizedBox(
+        height: 36,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          children: [
+            for (final p in presets)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _applyPreset(p),
+                  onLongPress: p.builtin ? null : () => _confirmDeletePreset(p),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: c.fill,
+                      borderRadius: IosShapes.continuous(IosShapes.radiusField),
+                    ),
+                    child: Row(children: [
+                      Icon(
+                        p.builtin ? CupertinoIcons.square_stack_3d_up : CupertinoIcons.bookmark_fill,
+                        size: 14, color: c.textSecondary,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(p.name, style: t.textStyles.footnote.copyWith(color: c.textPrimary)),
+                    ]),
+                  ),
+                ),
+              ),
+            // Кнопка «сохранить текущий выбор как пресет»
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _saveCurrentAsPreset,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: c.bgSecondary,
+                    borderRadius: IosShapes.continuous(IosShapes.radiusField),
+                    border: Border.all(color: c.separator, width: 1),
+                  ),
+                  child: Row(children: [
+                    Icon(CupertinoIcons.add, size: 14, color: c.blue),
+                    const SizedBox(width: 6),
+                    Text('Сохранить', style: t.textStyles.footnote.copyWith(color: c.blue)),
+                  ]),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDeletePreset(PerAppPreset p) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Удалить «${p.name}»?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить')),
+        ],
+      ),
+    );
+    if (ok == true) _deletePreset(p);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -136,6 +270,9 @@ class _PerAppProxyScreenState extends State<PerAppProxyScreen> {
               ]),
             ),
           ),
+
+          // Presets
+          _buildPresets(t, c),
 
           // Search
           Padding(
