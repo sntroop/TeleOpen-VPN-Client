@@ -69,7 +69,12 @@ class SpeedBenchmark {
   // Фиксированный объём upload: шлём ровно столько и закрываемся (с известным
   // Content-Length). Бесконечный chunked под VPN-TUN капризничал.
   static const _upBytes = 20 * 1024 * 1024; // 20 МБ
-  static const _downUrl = 'https://speed.cloudflare.com/__down?bytes=104857600';
+  // ВАЖНО: cloudflare __down отдаёт 403 (тело 1 байт!) на слишком большой
+  // bytes — раньше тут было 104857600 (100МБ) → download мерил «1 байт, 0 Мбит/с».
+  // 25МБ заведомо ниже лимита и хватает, чтобы намерить скорость за окно.
+  static const _downBytes = 25 * 1024 * 1024; // 26214400
+  static const _downUrl =
+      'https://speed.cloudflare.com/__down?bytes=$_downBytes';
   static const _upUrl = 'https://speed.cloudflare.com/__up';
 
   /// Отменить текущий тест.
