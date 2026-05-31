@@ -372,8 +372,16 @@ class HysteriaTunVpnService : VpnService() {
             // 3) initCoreEnv
             try {
                 val assetsDir = filesDir.absolutePath
-                flog(TAG, "calling initCoreEnv(env=$assetsDir, key=$assetsDir)")
-                Libv2ray.initCoreEnv(assetsDir, assetsDir)
+                // ВАЖНО: второй аргумент initCoreEnv — это xudp BaseKey
+                // (env xray.xudp.basekey), а НЕ ещё один путь. xray-core
+                // v26.5.9+ строго валидирует его: ждёт base64 ровно на 32
+                // байта. Раньше сюда ошибочно передавался assetsDir — путь
+                // декодировался в 0 байт, и Go-ядро паниковало (SIGABRT) →
+                // приложение крашилось при коннекте. Пустая строка = xray
+                // использует дефолт; для vless/vision/tcp без mux xudp не
+                // задействован, так что это безопасно.
+                flog(TAG, "calling initCoreEnv(env=$assetsDir, xudpKey=<empty>)")
+                Libv2ray.initCoreEnv(assetsDir, "")
                 flog(TAG, "initCoreEnv OK")
             } catch (t: Throwable) {
                 flogE(TAG, "initCoreEnv threw: ${t.javaClass.simpleName}", t)

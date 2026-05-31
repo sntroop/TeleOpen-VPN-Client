@@ -11,7 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class CrashLog {
   static const _key = 'dart_crash_log';
-  static const _maxEntries = 50;
+  static const _maxEntries = 150;
 
   static SharedPreferences? _prefs;
 

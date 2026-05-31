@@ -62,6 +62,13 @@ class SpeedBenchmark {
   // Сколько секунд крутим каждую фазу и за сколько тишины считаем зависанием.
   static const _testWindow = Duration(seconds: 10);
   static const _idleTimeout = Duration(seconds: 5);
+  // Окно прогрева upload: первые миллисекунды сокет глотает в send-буфер
+  // мгновенно, давая ложный спайк. Эти мс исключаем из «установившейся»
+  // скорости. До warmup всё равно показываем raw-скорость, чтобы не висел 0.
+  static const _warmup = Duration(milliseconds: 500);
+  // Фиксированный объём upload: шлём ровно столько и закрываемся (с известным
+  // Content-Length). Бесконечный chunked под VPN-TUN капризничал.
+  static const _upBytes = 20 * 1024 * 1024; // 20 МБ
   static const _downUrl = 'https://speed.cloudflare.com/__down?bytes=104857600';
   static const _upUrl = 'https://speed.cloudflare.com/__up';
 
@@ -79,6 +86,7 @@ class SpeedBenchmark {
   /// Возвращает результат или null если тест упал/отменён.
   Future<SpeedTestResult?> run(SpeedTestProgress onProgress) async {
     _cancelled = false;
+    CrashLog.note('speedtest', 'run() вход');
 
     final (pingMs, jitterMs) = await _measureLatency(onProgress);
     if (_cancelled) {
@@ -157,6 +165,7 @@ class SpeedBenchmark {
       phase: SpeedTestPhase.download,
       progress: 0, currentSpeed: 0, pingMs: pingMs, jitterMs: jitterMs,
     );
+    CrashLog.note('speedtest', 'download: старт GET $_downUrl');
 
     final resp =
         await _openWithRetry(() => client.getUrl(Uri.parse(_downUrl)));
@@ -166,6 +175,7 @@ class SpeedBenchmark {
     var bytes = 0;
     StreamSubscription<List<int>>? sub;
     Timer? watchdog;
+    Timer? ticker;
 
     double mbps() {
       final secs = sw.elapsedMilliseconds / 1000.0;
@@ -173,18 +183,38 @@ class SpeedBenchmark {
     }
 
     void finish() {
+      ticker?.cancel();
       watchdog?.cancel();
       sub?.cancel();
-      if (!completer.isCompleted) completer.complete(mbps());
+      if (!completer.isCompleted) {
+        CrashLog.note('speedtest',
+            'download: итог $bytes байт за ${sw.elapsedMilliseconds}мс, ${mbps().toStringAsFixed(1)} Мбит/с');
+        completer.complete(mbps());
+      }
     }
 
     void armWatchdog() {
       watchdog?.cancel();
       watchdog = Timer(_idleTimeout, () {
-        CrashLog.note('speedtest', 'download: $_idleTimeout без байт — стоп');
+        CrashLog.note('speedtest',
+            'download: $_idleTimeout без байт (получено $bytes) — стоп');
         finish();
       });
     }
+
+    // Прогресс шлём по таймеру, НЕЗАВИСИМО от прихода чанков. Иначе при рваном
+    // или нулевом трафике фаза download не отображалась бы вовсе (раньше
+    // onProgress висел только в chunk-колбэке) и экран сразу прыгал на upload.
+    ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      onProgress(
+        phase: SpeedTestPhase.download,
+        progress: (sw.elapsedMilliseconds / _testWindow.inMilliseconds)
+            .clamp(0.0, 1.0),
+        currentSpeed: mbps(),
+        pingMs: pingMs,
+        jitterMs: jitterMs,
+      );
+    });
 
     sub = resp.listen(
       (chunk) {
@@ -194,21 +224,17 @@ class SpeedBenchmark {
         }
         bytes += chunk.length;
         armWatchdog();
-        final elapsed = sw.elapsedMilliseconds;
-        onProgress(
-          phase: SpeedTestPhase.download,
-          progress: (elapsed / _testWindow.inMilliseconds).clamp(0.0, 1.0),
-          currentSpeed: mbps(),
-          pingMs: pingMs,
-          jitterMs: jitterMs,
-        );
-        if (elapsed >= _testWindow.inMilliseconds) finish();
+        if (sw.elapsedMilliseconds >= _testWindow.inMilliseconds) finish();
       },
       onError: (e) {
-        CrashLog.note('speedtest', 'download onError: $e');
+        CrashLog.note('speedtest', 'download onError ($bytes байт): $e');
         finish();
       },
-      onDone: finish,
+      onDone: () {
+        CrashLog.note('speedtest',
+            'download onDone: $bytes байт за ${sw.elapsedMilliseconds}мс');
+        finish();
+      },
       cancelOnError: true,
     );
 
@@ -227,41 +253,82 @@ class SpeedBenchmark {
       phase: SpeedTestPhase.upload,
       progress: 0, currentSpeed: 0, pingMs: pingMs, jitterMs: jitterMs,
     );
+    CrashLog.note('speedtest', 'upload: старт POST $_upUrl, объём $_upBytes Б');
 
-    final chunk = Uint8List(64 * 1024); // 64 КБ нулей на отправку
+    final chunk = Uint8List(64 * 1024); // 64 КБ на отправку
     final sw = Stopwatch()..start();
-    var sent = 0;
+    var sent = 0; // байты, РЕАЛЬНО принятые сокетом (после возврата из yield)
+    var warmupSent = 0; // отсечка: сколько ушло за warmup-окно
+    var warmupDone = false;
     var stop = false;
+    var lastSent = 0; // для idle-watchdog: значение sent на прошлой проверке
+    var idleMs = 0; // сколько мс подряд sent не растёт
 
+    // Установившаяся скорость: первые _warmup мс сокет глотает в буфер
+    // мгновенно — исключаем их, меряем (sent - warmupSent) за (elapsed - warmup).
     double mbps() {
+      final secs = (sw.elapsedMilliseconds - _warmup.inMilliseconds) / 1000.0;
+      if (secs <= 0) return 0;
+      return ((sent - warmupSent) * 8 / 1e6) / secs;
+    }
+
+    // Сырая скорость по всему объёму — показываем ДО warmup, чтобы поле не
+    // висело на 0 (раньше до warmup жёстко слался 0 → «вечный ноль»).
+    double rawMbps() {
       final secs = sw.elapsedMilliseconds / 1000.0;
       return secs > 0 ? (sent * 8 / 1e6) / secs : 0;
     }
 
-    // Генератор тела: бэкпрешер addStream сам притормаживает нас под скорость
-    // сокета, поэтому sent ≈ реально ушедшие в сеть байты.
+    // Прогресс гоним по таймеру, а НЕ из тела-генератора: при бэкпрешере
+    // генератор блокируется на yield и события прогресса замерли бы (отсюда
+    // была «заморозка»). Таймер тикает независимо + ловит idle (нет роста sent).
+    final ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      if (!warmupDone && sw.elapsedMilliseconds >= _warmup.inMilliseconds) {
+        warmupDone = true;
+        warmupSent = sent;
+      }
+      // idle-watchdog: если sent не растёт _idleTimeout подряд — сокет не
+      // забирает байты (мёртвый канал под TUN) → обрываем, чтобы не висеть.
+      if (sent == lastSent) {
+        idleMs += 250;
+        if (idleMs >= _idleTimeout.inMilliseconds && !stop) {
+          stop = true;
+          CrashLog.note('speedtest',
+              'upload: $_idleTimeout без роста (sent=$sent) — стоп');
+        }
+      } else {
+        idleMs = 0;
+        lastSent = sent;
+      }
+      onProgress(
+        phase: SpeedTestPhase.upload,
+        progress:
+            (sent / _upBytes).clamp(0.0, 1.0),
+        currentSpeed: warmupDone ? mbps() : rawMbps(),
+        pingMs: pingMs,
+        jitterMs: jitterMs,
+      );
+    });
+
+    // Тело: шлём ровно _upBytes (или пока не stop/cancel/окно). Счётчик растим
+    // ПОСЛЕ yield — значит чанк реально забрал сокет (бэкпрешер addStream).
     Stream<List<int>> body() async* {
       while (!stop &&
           !_cancelled &&
+          sent < _upBytes &&
           sw.elapsedMilliseconds < _testWindow.inMilliseconds) {
         yield chunk;
         sent += chunk.length;
-        onProgress(
-          phase: SpeedTestPhase.upload,
-          progress:
-              (sw.elapsedMilliseconds / _testWindow.inMilliseconds).clamp(0.0, 1.0),
-          currentSpeed: mbps(),
-          pingMs: pingMs,
-          jitterMs: jitterMs,
-        );
-        await Future<void>.delayed(Duration.zero); // отдать управление циклу
       }
     }
 
     try {
       final req = await client.postUrl(Uri.parse(_upUrl));
       req.headers.contentType = ContentType('application', 'octet-stream');
-      req.headers.chunkedTransferEncoding = true;
+      // Известный Content-Length вместо бесконечного chunked — детерминированный
+      // приём, под VPN-TUN надёжнее. body() обязан отдать ровно _upBytes; если
+      // оборвёмся раньше (watchdog/окно), close() кинет ошибку — её ловит catch.
+      req.headers.contentLength = _upBytes;
 
       // Watchdog на весь upload: окно + запас на финальный ответ.
       final guard = Timer(_testWindow + const Duration(seconds: 6), () {
@@ -273,10 +340,15 @@ class SpeedBenchmark {
       await resp.drain<void>();
       guard.cancel();
     } catch (e) {
-      CrashLog.note('speedtest', 'upload упал: $e');
+      CrashLog.note('speedtest', 'upload: соединение/отправка прервана (sent=$sent): $e');
+    } finally {
+      ticker.cancel();
     }
 
-    return mbps();
+    final result = warmupDone ? mbps() : rawMbps();
+    CrashLog.note('speedtest',
+        'upload: итог sent=$sent за ${sw.elapsedMilliseconds}мс, ${result.toStringAsFixed(1)} Мбит/с');
+    return result;
   }
 
   // ── LATENCY (как было — TCP-handshake к 1.1.1.1, не зависит от DNS) ────────

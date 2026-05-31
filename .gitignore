@@ -56,3 +56,6 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 dist/
+
+# Локальные дампы logcat с устройства (диагностика, не код)
+LOGCAT/
