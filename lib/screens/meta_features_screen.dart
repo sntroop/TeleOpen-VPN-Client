@@ -47,9 +47,6 @@ class _MetaFeaturesScreenState extends State<MetaFeaturesScreen> {
   // geo file imports — статус "Press to import..." → имя файла после импорта
 
   static const _onOff = <String>['Не менять', 'Включить', 'Выключить'];
-  static const _geoModes = <String>['Не менять', 'GeoIP', 'GeoSite', 'GeoIP+GeoSite', 'ASN'];
-  static const _findProcessModes = <String>['Не менять', 'always', 'strict', 'off'];
-  static const _sniffStrategies = <String>['Не менять', 'normal', 'override-destination', 'force-domain'];
 
   @override
   Widget build(BuildContext context) {
@@ -65,24 +62,13 @@ class _MetaFeaturesScreenState extends State<MetaFeaturesScreen> {
           slivers: [
             const SliverToBoxAdapter(child: _ScreenHeader(title: 'Функции Meta')),
 
-            // ── Базовые поведенческие ───────────────────────────────────
-            SliverToBoxAdapter(
-              child: IosListSection(
-                header: 'Поведение',
-                children: [
-                  _optionsRow('Унифицированная задержка', _s.metaUnifiedDelay, _onOff,
-                      (v) => _update((s) => s.metaUnifiedDelay = v)),
-                  _optionsRow('Режим геоданных', _s.metaGeoMode, _geoModes,
-                      (v) => _update((s) => s.metaGeoMode = v)),
-                  _optionsRow('Многопоточный TCP', _s.metaMptcp, _onOff,
-                      (v) => _update((s) => s.metaMptcp = v)),
-                  _optionsRow('Найти режим процесса', _s.metaFindProcess, _findProcessModes,
-                      (v) => _update((s) => s.metaFindProcess = v)),
-                ],
-              ),
-            ),
-
             // ── Sniffing ────────────────────────────────────────────────
+            // Оставлены только опции, которые реально применяются ядром xray
+            // (см. HysteriaTunVpnService.ensureTunInbound): три Override
+            // Destination, Parse Pure IP и «Исключения доменов». Остальные
+            // mihomo/meta-поля (порты sniff, стратегия, force-domain, skip
+            // src/dst, режим геоданных, MPTCP и т.п.) xray не поддерживает —
+            // скрыты, чтобы не вводить в заблуждение.
             SliverToBoxAdapter(
               child: IosListSection(
                 header: 'Настройки перехвата доменов',
@@ -91,75 +77,16 @@ class _MetaFeaturesScreenState extends State<MetaFeaturesScreen> {
                     'имя хоста (SNI/Host header/QUIC), даже если приложение '
                     'обращается напрямую по IP.',
                 children: [
-                  _optionsRow('Стратегия', _s.metaStrategy, _sniffStrategies,
-                      (v) => _update((s) => s.metaStrategy = v)),
-                  _textRow('Sniff HTTP Ports', _s.metaSniffHttpPorts, '80,8080-8880',
-                      (v) => _update((s) => s.metaSniffHttpPorts = v)),
                   _optionsRow('Sniff HTTP Override Destination', _s.metaSniffHttpOverride, _onOff,
                       (v) => _update((s) => s.metaSniffHttpOverride = v)),
-                  _textRow('Sniff TLS Ports', _s.metaSniffTlsPorts, '443,8443',
-                      (v) => _update((s) => s.metaSniffTlsPorts = v)),
                   _optionsRow('Sniff TLS Override Destination', _s.metaSniffTlsOverride, _onOff,
                       (v) => _update((s) => s.metaSniffTlsOverride = v)),
-                  _textRow('Sniff QUIC Ports', _s.metaSniffQuicPorts, '443',
-                      (v) => _update((s) => s.metaSniffQuicPorts = v)),
                   _optionsRow('Sniff QUIC Override Destination', _s.metaSniffQuicOverride, _onOff,
                       (v) => _update((s) => s.metaSniffQuicOverride = v)),
-                  _optionsRow('Force DNS Mapping', _s.metaForceDnsMapping, _onOff,
-                      (v) => _update((s) => s.metaForceDnsMapping = v)),
                   _optionsRow('Parse Pure IP', _s.metaParsePureIp, _onOff,
                       (v) => _update((s) => s.metaParsePureIp = v)),
-                  _optionsRow('Override Destination', _s.metaOverrideDestination, _onOff,
-                      (v) => _update((s) => s.metaOverrideDestination = v)),
-                  _textRow('Принудительный перехват доменов', _s.metaForceDomain, 'v.douyin.com, +.amemv.com',
-                      (v) => _update((s) => s.metaForceDomain = v)),
                   _textRow('Исключения перехвата доменов', _s.metaSkipDomain, '+.push.apple.com',
                       (v) => _update((s) => s.metaSkipDomain = v)),
-                  _textRow('Skip Src Address', _s.metaSkipSrc, '192.168.0.0/24',
-                      (v) => _update((s) => s.metaSkipSrc = v)),
-                  _textRow('Skip Dst Address', _s.metaSkipDst, '10.0.0.0/8',
-                      (v) => _update((s) => s.metaSkipDst = v)),
-                ],
-              ),
-            ),
-
-            // ── Geo Files ───────────────────────────────────────────────
-            SliverToBoxAdapter(
-              child: IosListSection(
-                header: 'Geo Files',
-                footer:
-                    'Импорт локальных баз. Поддерживаются форматы .dat/.mmdb. '
-                    'После импорта файл сохраняется в каталоге приложения и '
-                    'используется ядром при матчинге GEOIP/GEOSITE/ASN-правил.',
-                children: [
-                  _importRow(
-                    title: 'Import GeoIP Database',
-                    status: _s.metaGeoipPath,
-                    icon: CupertinoIcons.location_solid,
-                    bg: c.blue,
-                    onTap: () => _runImport('geoip', (name) => _update((s) => s.metaGeoipPath = name)),
-                  ),
-                  _importRow(
-                    title: 'Import GeoSite Database',
-                    status: _s.metaGeositePath,
-                    icon: CupertinoIcons.globe,
-                    bg: c.green,
-                    onTap: () => _runImport('geosite', (name) => _update((s) => s.metaGeositePath = name)),
-                  ),
-                  _importRow(
-                    title: 'Import Country Database',
-                    status: _s.metaCountryPath,
-                    icon: CupertinoIcons.flag,
-                    bg: c.orange,
-                    onTap: () => _runImport('country', (name) => _update((s) => s.metaCountryPath = name)),
-                  ),
-                  _importRow(
-                    title: 'Import ASN Database',
-                    status: _s.metaAsnPath,
-                    icon: CupertinoIcons.number_circle,
-                    bg: c.purple,
-                    onTap: () => _runImport('asn', (name) => _update((s) => s.metaAsnPath = name)),
-                  ),
                 ],
               ),
             ),
@@ -174,57 +101,6 @@ class _MetaFeaturesScreenState extends State<MetaFeaturesScreen> {
   }
 
   // ── helpers ────────────────────────────────────────────────────────────
-
-  Widget _importRow({
-    required String title,
-    required String status,
-    required IconData icon,
-    required Color bg,
-    required VoidCallback onTap,
-  }) {
-    return IosListTile(
-      leadingIcon: icon,
-      leadingIconBg: bg,
-      title: title,
-      subtitle: status.isEmpty ? 'Press to import...' : status,
-      showChevron: true,
-      onTap: onTap,
-    );
-  }
-
-  /// Импорт geo-файла. Использует file_picker (для выбора файла на устройстве)
-  /// и vpn_bridge.importGeoFile (натив копирует файл в каталог приложения
-  /// и регистрирует его в ядре mihomo).
-  ///
-  /// Требует в pubspec.yaml: file_picker: ^8.0.0
-  /// Если file_picker не добавлен — натив всё равно может принять
-  /// произвольный путь через системный share-sheet.
-  Future<void> _runImport(String kind, ValueChanged<String> onPicked) async {
-    // Чтобы не делать жёсткой зависимости в этом файле, дёргаем native
-    // напрямую: нативный код сам показывает Storage Access Framework picker
-    // (Android) или UIDocumentPickerViewController (iOS) и возвращает путь.
-    final bridge = AppStateScope.of(context, listen: false).bridge;
-
-    // sourcePath='' просим натив открыть свой пикер
-    final result = await bridge.importGeoFile(kind: kind, sourcePath: '');
-    if (!mounted) return;
-    if (result == null || result.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          behavior: SnackBarBehavior.floating,
-          content: Text('Импорт отменён'),
-        ),
-      );
-      return;
-    }
-    onPicked(result);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        content: Text('Файл импортирован: $result'),
-      ),
-    );
-  }
 
   Widget _textRow(String title, String current, String placeholder,
       ValueChanged<String> onSelect) {

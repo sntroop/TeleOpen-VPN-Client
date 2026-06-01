@@ -19,6 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileDescriptor
+import java.io.FileOutputStream
 
 class HysteriaTunVpnService : VpnService() {
 
@@ -372,6 +373,11 @@ class HysteriaTunVpnService : VpnService() {
             // 3) initCoreEnv
             try {
                 val assetsDir = filesDir.absolutePath
+                // geoip.dat/geosite.dat вшиты в assets/geo и нужны xray для
+                // правил geosite:/geoip: (блок рекламы, маршрут по стране).
+                // xray ищет их в assetsDir (= filesDir), поэтому копируем туда
+                // при первом старте (если ещё не скопированы).
+                copyGeoAssets(assetsDir)
                 // ВАЖНО: второй аргумент initCoreEnv — это xudp BaseKey
                 // (env xray.xudp.basekey), а НЕ ещё один путь. xray-core
                 // v26.5.9+ строго валидирует его: ждёт base64 ровно на 32
@@ -456,7 +462,47 @@ class HysteriaTunVpnService : VpnService() {
     }
 
     /**
-     * Гарантирует наличие inbound с protocol="tun" в xray-конфиге.
+     * Копирует вшитые geoip.dat / geosite.dat из assets/geo в каталог,
+     * где их ищет xray (assetsDir = filesDir). Чтобы не копировать ~15МБ на
+     * каждый коннект, ставим маркер .geo_version с versionCode приложения —
+     * перекопируем только при первом старте и после обновления приложения.
+     * Отсутствие файлов в assets не фатально — правила geosite:/geoip: просто
+     * не сработают (xray не падает).
+     */
+    private fun copyGeoAssets(destDir: String) {
+        val verCode = try {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(packageName, 0).versionCode.toString()
+        } catch (_: Throwable) { "0" }
+        val marker = File(destDir, ".geo_version")
+        val upToDate = marker.exists() &&
+            marker.readText() == verCode &&
+            File(destDir, "geoip.dat").exists() &&
+            File(destDir, "geosite.dat").exists()
+        if (upToDate) {
+            flog(TAG, "geo: файлы актуальны (v$verCode)")
+            return
+        }
+        var ok = true
+        for (name in listOf("geoip.dat", "geosite.dat")) {
+            try {
+                val out = File(destDir, name)
+                assets.open("geo/$name").use { input ->
+                    FileOutputStream(out).use { os -> input.copyTo(os, 64 * 1024) }
+                }
+                flog(TAG, "geo: $name скопирован (${out.length()} б)")
+            } catch (e: java.io.FileNotFoundException) {
+                ok = false
+                flog(TAG, "geo: $name отсутствует в assets — правила geo не будут работать")
+            } catch (t: Throwable) {
+                ok = false
+                flogE(TAG, "geo: копирование $name упало", t)
+            }
+        }
+        if (ok) marker.writeText(verCode)
+    }
+
+    /**
      * xray-core активирует TUN-обработчик ТОЛЬКО при наличии такого inbound.
      * Существующие inbounds (socks/http) оставляем — они не мешают (для in-app proxy/тестов).
      *
@@ -549,6 +595,42 @@ class HysteriaTunVpnService : VpnService() {
                 val logObj = root.optJSONObject("log") ?: JSONObject()
                 logObj.put("loglevel", logLevel)
                 root.put("log", logObj)
+            }
+
+            // ── Routing: блок рекламы + маршрут по стране (geo) ─────────
+            // Требуют вшитых geoip.dat/geosite.dat (copyGeoAssets). Если их нет,
+            // xray тихо проигнорирует правила — поведение деградирует, не падает.
+            // Правила добавляем В НАЧАЛО списка (приоритетнее дефолтного
+            // private-IP→direct из Dart-конфига). Порядок: сперва блок рекламы,
+            // затем direct по стране.
+            val routing = root.optJSONObject("routing") ?: JSONObject().also {
+                it.put("domainStrategy", "IPIfNonMatch")
+                root.put("routing", it)
+            }
+            val existingRules = routing.optJSONArray("rules") ?: JSONArray()
+            val newRules = JSONArray()
+            // 1) Блок рекламы
+            if (cfg.optBoolean("block_ads", false)) {
+                newRules.put(JSONObject()
+                    .put("type", "field")
+                    .put("domain", JSONArray().put("geosite:category-ads-all"))
+                    .put("outboundTag", "block"))
+                flog(TAG, "routing: block_ads → geosite:category-ads-all")
+            }
+            // 2) Регион: трафик страны идёт мимо VPN (direct). Код страны
+            // (напр. "ru") приходит готовым из Dart (AppSettings.regionCodeOf).
+            val regionCode = cfg.optString("region_code", "").lowercase()
+            if (regionCode.isNotEmpty()) {
+                newRules.put(JSONObject()
+                    .put("type", "field")
+                    .put("ip", JSONArray().put("geoip:$regionCode"))
+                    .put("outboundTag", "direct"))
+                flog(TAG, "routing: region → geoip:$regionCode direct")
+            }
+            // Склейка: новые (приоритетные) + существующие.
+            if (newRules.length() > 0) {
+                for (i in 0 until existingRules.length()) newRules.put(existingRules.get(i))
+                routing.put("rules", newRules)
             }
 
             root.toString()

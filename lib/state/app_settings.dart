@@ -515,6 +515,13 @@ class AppSettings {
     p.setString('s_metaAsnPath', metaAsnPath);
   }
 
+  /// Извлекает двухбуквенный код страны из строки региона вида "Россия (ru)".
+  /// Возвращает код в нижнем регистре ('ru') или '' если не удалось распарсить.
+  static String regionCodeOf(String region) {
+    final m = RegExp(r'\(([A-Za-z]{2})\)').firstMatch(region);
+    return m == null ? '' : m.group(1)!.toLowerCase();
+  }
+
   /// Сериализация в Map для отправки в нативный слой (mihomo/clash.meta).
   /// 'Не менять' / пустые строки в финальный конфиг не попадают.
   Map<String, dynamic> toCoreConfig() {
@@ -532,6 +539,9 @@ class AppSettings {
     m['packet_analysis'] = packetAnalysis;
     m['use_mux'] = useMux;
     m['region'] = region;
+    // Двухбуквенный код страны из region (формат "Россия (ru)") — натив
+    // строит из него geoip-правило. Пусто = правило не добавляется.
+    m['region_code'] = regionCodeOf(region);
     m['balancer_strategy'] = balancerStrategy;
     m['block_ads'] = blockAds;
     m['bypass_lan'] = bypassLan;
@@ -573,11 +583,16 @@ class AppSettings {
     putStr('dns_nameserver_policy', dnsNameserverPolicy);
 
     // Network
+    // ВАЖНО: главный экран настроек дублирует «Обход LAN» (bypassLan) и «Маршрут
+    // IPv6» (ipv6Route), но писал их в ключи bypass_lan/ipv6_route, которые натив
+    // не читает. Реально нативка (HysteriaTunVpnService) читает net_bypass_private
+    // и net_allow_ipv6. Поэтому ИЛИ-объединяем оба источника — тумблер с любого
+    // экрана даёт эффект.
     m['net_route_system'] = netRouteSystemTraffic;
-    m['net_bypass_private'] = netBypassPrivate;
+    m['net_bypass_private'] = netBypassPrivate || bypassLan;
     m['net_hijack_dns'] = netHijackDns;
     m['net_allow_bypass'] = netAllowBypass;
-    m['net_allow_ipv6'] = netAllowIpv6;
+    m['net_allow_ipv6'] = netAllowIpv6 || (ipv6Route != 'Отключить');
     m['net_system_proxy'] = netSystemProxy;
 
     // Local ports

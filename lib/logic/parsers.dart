@@ -564,7 +564,10 @@ String _id(String s) {
 
 /// Собирает JSON-конфиг для xray-core по узлу.
 /// Hysteria2 здесь НЕ обрабатывается — для него отдельный движок.
-String buildXrayConfig(VpnNode node, {bool packetSniffing = true, bool useMux = false}) {
+String buildXrayConfig(VpnNode node,
+    {bool packetSniffing = true,
+    bool useMux = false,
+    bool resolveDestination = false}) {
   if (node.protocol == VpnProtocol.hysteria2) {
     throw UriParseException('HYSTERIA2 не использует xray-core — нужен hysteria-бинарь');
   }
@@ -588,7 +591,9 @@ String buildXrayConfig(VpnNode node, {bool packetSniffing = true, bool useMux = 
     ],
     'dns': {'servers': ['1.1.1.1', 'localhost']},
     'routing': {
-      'domainStrategy': 'IPIfNonMatch',
+      // resolveDestination: резолвить домен в IP до применения правил (UseIP).
+      // Иначе — IPIfNonMatch (резолв только когда правило не сматчилось по домену).
+      'domainStrategy': resolveDestination ? 'UseIP' : 'IPIfNonMatch',
       'rules': [
         {'type': 'field', 'ip': ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'], 'outboundTag': 'direct'},
       ],

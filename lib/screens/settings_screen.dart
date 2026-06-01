@@ -23,8 +23,6 @@ import 'author_panel_screen.dart';
 import 'admin_panel_screen.dart';
 import 'themes_screen.dart';
 import 'network_screen.dart';
-import 'local_ports_screen.dart';
-import 'external_controller_screen.dart';
 import 'meta_features_screen.dart';
 import 'dns_leak_test_screen.dart';
 import 'proxy_visibility_screen.dart';
@@ -47,13 +45,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Версия приложения, читается из нативки (канал space.teleopen.app/native).
   String _appVersion = '';
-
-  static const _balancerStrategies = <String>[
-    'Round robin',
-    'Random',
-    'Least ping',
-    'Least load',
-  ];
 
   static const _ipv6Modes = <String>[
     'Отключить',
@@ -187,14 +178,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onChanged: (v) => _update((s) => s.autoFailover = v),
                     ),
                   ),
-                  IosListTile(
-                    leadingIcon: CupertinoIcons.globe,
-                    leadingIconBg: c.fill,
-                    title: 'DNS-сервер',
-                    trailingText: _s.dns,
-                    showChevron: true,
-                    onTap: () => _showDnsPicker(context),
-                  ),
+                  // DNS-сервер (главный): скрыт — конфликтует с моделью
+                  // remote/direct DNS (экран «Сеть → DNS»), ядро xray этот
+                  // одиночный ключ не читает. Настройка DNS — на экране DNS.
+                  // IosListTile(
+                  //   leadingIcon: CupertinoIcons.globe,
+                  //   leadingIconBg: c.fill,
+                  //   title: 'DNS-сервер',
+                  //   trailingText: _s.dns,
+                  //   showChevron: true,
+                  //   onTap: () => _showDnsPicker(context),
+                  // ),
                 ],
               ),
             ),
@@ -264,19 +258,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onSelect: (v) => _update((s) => s.region = v),
                     ),
                   ),
-                  IosListTile(
-                    leadingIcon: CupertinoIcons.arrow_2_squarepath,
-                    leadingIconBg: c.fill,
-                    title: 'Стратегия Balancer',
-                    subtitle: _s.balancerStrategy,
-                    showChevron: true,
-                    onTap: () => _showOptions(
-                      title: 'Стратегия Balancer',
-                      options: _balancerStrategies,
-                      current: _s.balancerStrategy,
-                      onSelect: (v) => _update((s) => s.balancerStrategy = v),
-                    ),
-                  ),
+                  // Стратегия Balancer: скрыта — балансировка требует нескольких
+                  // outbound'ов, а у нас single-node (один активный сервер).
+                  // Включить вместе с мульти-узловым outbound'ом в будущем.
+                  // IosListTile(
+                  //   leadingIcon: CupertinoIcons.arrow_2_squarepath,
+                  //   leadingIconBg: c.fill,
+                  //   title: 'Стратегия Balancer',
+                  //   subtitle: _s.balancerStrategy,
+                  //   showChevron: true,
+                  //   onTap: () => _showOptions(
+                  //     title: 'Стратегия Balancer',
+                  //     options: _balancerStrategies,
+                  //     current: _s.balancerStrategy,
+                  //     onSelect: (v) => _update((s) => s.balancerStrategy = v),
+                  //   ),
+                  // ),
                   IosListTile(
                     leadingIcon: CupertinoIcons.nosign,
                     leadingIconBg: c.fill,
@@ -391,26 +388,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       builder: (_) => const NetworkScreen(),
                     )),
                   ),
-                  IosListTile(
-                    leadingIcon: CupertinoIcons.number,
-                    leadingIconBg: c.fill,
-                    title: 'Локальные порты',
-                    subtitle: 'HTTP/Socks/TProxy/Mixed, LAN, Bind',
-                    showChevron: true,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const LocalPortsScreen(),
-                    )),
-                  ),
-                  IosListTile(
-                    leadingIcon: CupertinoIcons.lock_circle,
-                    leadingIconBg: c.fill,
-                    title: 'External Controller',
-                    subtitle: 'REST-API для дашбордов',
-                    showChevron: true,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const ExternalControllerScreen(),
-                    )),
-                  ),
+                  // Локальные порты и External Controller скрыты: приложение
+                  // намеренно не поднимает socks/http-inbound (весь трафик через
+                  // TUN, см. parsers.dart buildXrayConfig) и не запускает REST-API
+                  // ядра. Эти настройки ни на что не влияли бы.
+                  // IosListTile(
+                  //   leadingIcon: CupertinoIcons.number,
+                  //   leadingIconBg: c.fill,
+                  //   title: 'Локальные порты',
+                  //   subtitle: 'HTTP/Socks/TProxy/Mixed, LAN, Bind',
+                  //   showChevron: true,
+                  //   onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  //     builder: (_) => const LocalPortsScreen(),
+                  //   )),
+                  // ),
+                  // IosListTile(
+                  //   leadingIcon: CupertinoIcons.lock_circle,
+                  //   leadingIconBg: c.fill,
+                  //   title: 'External Controller',
+                  //   subtitle: 'REST-API для дашбордов',
+                  //   showChevron: true,
+                  //   onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  //     builder: (_) => const ExternalControllerScreen(),
+                  //   )),
+                  // ),
                   IosListTile(
                     leadingIcon: CupertinoIcons.gear_alt_fill,
                     leadingIconBg: c.purple,
@@ -568,19 +569,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         options: options,
         currentValue: current,
         onSelect: onSelect,
-      ),
-    );
-  }
-
-  // ─── Picker: DNS (пресеты + ручной ввод) ────────────────────────────────
-  void _showDnsPicker(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _DnsPickerSheet(
-        currentValue: _s.dns,
-        onSelect: (v) => _update((s) => s.dns = v),
       ),
     );
   }

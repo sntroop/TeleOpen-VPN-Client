@@ -46,6 +46,7 @@ mixin AppStateConnection on AppStateBase {
           node,
           packetSniffing: settings.packetAnalysis,
           useMux: settings.useMux,
+          resolveDestination: settings.resolveDestination,
         );
         final ok = await bridge.startV2Ray(
           config: config,
