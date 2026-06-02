@@ -59,3 +59,19 @@ dist/
 
 # Локальные дампы logcat с устройства (диагностика, не код)
 LOGCAT/
+
+# Happ-дешифратор: рабочие артефакты и референс-репы реверса — НЕ в публичный
+# репозиторий. В репо едут только собранные ключи assets/happ/*.json и код
+# logic/happ_decrypt.dart + logic/happ_keys_loader.dart.
+/amur/
+/opex/
+/kastov/
+/happ_work/
+/crypt.txt
+/Happ_*.apk
+/extract_happ_keys.py
+/decrypt_happ.py
+/build_happ_assets.py
+
+# Локальные настройки агента
+/.claude/

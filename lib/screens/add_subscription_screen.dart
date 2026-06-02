@@ -19,6 +19,8 @@ import '../main.dart';
 import '../models/mtproto_proxy.dart';
 import '../logic/market_api.dart';
 import '../logic/subscriptions.dart';
+import '../logic/happ_decrypt.dart' show HappMissingKeyException;
+import '../logic/happ_keys_loader.dart';
 
 // ── режимы экрана ─────────────────────────────────────────────────────────────
 part 'add_subscription/parts.dart';
@@ -52,6 +54,33 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
     super.dispose();
   }
 
+  /// Расшифровывает happ://-ссылки в [raw]. Возвращает расширенный текст, либо
+  /// null (выставив _error и сняв _loading), если ключа нет или расшифровка
+  /// не удалась. Строки без happ:// проходят насквозь.
+  Future<String?> _expandHapp(String raw) async {
+    if (!raw.contains('happ://')) return raw;
+    try {
+      return await expandHappLinks(raw);
+    } on HappMissingKeyException catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Нет ключа для этой Happ-ссылки (маркер ${e.marker}). '
+              'Возможно, ссылка из новой версии Happ.';
+        });
+      }
+      return null;
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Не удалось расшифровать Happ-ссылку: $e';
+        });
+      }
+      return null;
+    }
+  }
+
   // ── clipboard ──────────────────────────────────────────────────────────────
   Future<void> _addFromClipboard() async {
     // Берём state синхронно, до любого await — позже context может стать
@@ -72,6 +101,12 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
       setState(() { _loading = false; _error = 'Буфер обмена пуст'; });
       return;
     }
+
+    // happ://crypt..crypt5 — расшифровываем в обычный текст (URL подписки или
+    // список vless://...), дальше логика ниже обрабатывает его как обычно.
+    final expanded = await _expandHapp(raw);
+    if (expanded == null) return;
+    raw = expanded.trim();
 
     // Если в буфере одна HTTP/HTTPS-ссылка (raw.githubusercontent.com и т.п.)
     // — качаем как подписку.
@@ -246,10 +281,36 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
     );
     if (result == null || !mounted) return;
     setState(() { _loading = true; _error = null; });
-    final err = AppStateScope.of(context).addManualNode(result.trim());
+
+    // QR может содержать happ://-ссылку — расшифровываем.
+    final expanded = await _expandHapp(result.trim());
+    if (expanded == null) return;
+    final text = expanded.trim();
     if (!mounted) return;
-    if (err != null) {
-      setState(() { _loading = false; _error = err; });
+    final state = AppStateScope.of(context);
+
+    // Расшифрованный happ:// мог развернуться в URL подписки.
+    if (_looksLikeHttpUrl(text)) {
+      final err = await state.addSubscription(url: text);
+      if (!mounted) return;
+      if (err != null) {
+        setState(() { _loading = false; _error = err; });
+      } else {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+
+    // Иначе — одна или несколько строк-нод.
+    int added = 0;
+    String? lastErr;
+    for (final uri in text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty)) {
+      final err = state.addManualNode(uri);
+      if (err == null) { added++; } else { lastErr = err; }
+    }
+    if (!mounted) return;
+    if (added == 0) {
+      setState(() { _loading = false; _error = lastErr ?? 'Не удалось добавить'; });
     } else {
       Navigator.of(context).pop();
     }
@@ -257,12 +318,18 @@ class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
 
   // ── manual URI ────────────────────────────────────────────────────────────
   Future<void> _addManual() async {
-    final raw = _manualCtrl.text.trim();
+    var raw = _manualCtrl.text.trim();
     if (raw.isEmpty) {
       setState(() => _error = 'Вставьте или введите URI сервера');
       return;
     }
     setState(() { _loading = true; _error = null; });
+
+    // happ://crypt..crypt5 — расшифровываем (URL подписки или vless-список).
+    final expanded = await _expandHapp(raw);
+    if (expanded == null) return;
+    if (!mounted) return;
+    raw = expanded.trim();
 
     // Если введена HTTP/HTTPS-ссылка — скачиваем как подписку
     if (_looksLikeHttpUrl(raw)) {
