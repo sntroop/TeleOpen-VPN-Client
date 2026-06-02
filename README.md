@@ -95,10 +95,7 @@ flutter build apk --release
 - AI-фиксер физически не может трогать критичные поля (kill-switch, удаление
   серверов, регион) — только узкий белый список в `ai_fixer.dart`.
 - Глобальный перехват ошибок (`runZonedGuarded` + `FlutterError.onError` +
-  `PlatformDispatcher.onError`) — краши логируются, а не убивают процесс молча.
-
-> **Никогда не коммить токены/ключи.** GitHub PAT держи в git credential
-> helper, а не в URL remote'а.
+  `PlatformDispatcher.onError`) — краши логируются, а не убивают процесс
 
 ---
 
