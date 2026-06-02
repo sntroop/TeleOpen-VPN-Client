@@ -6,8 +6,27 @@
 part of 'app_state.dart';
 
 mixin AppStateGroups on AppStateBase {
-  void _loadGroups() {
-    final s = prefs.getString('groups') ?? '';
+  /// HIGH-5: ноды (rawUri с паролями) теперь в зашифрованном хранилище, а не в
+  /// plain SharedPreferences. Загрузка асинхронна; при первом запуске после
+  /// обновления — одноразовая миграция старого ключа 'groups' из prefs.
+  Future<void> _loadGroups() async {
+    String s = '';
+    try {
+      final secure = await SecureStore.readGroups();
+      if (secure != null) {
+        s = secure;
+      } else {
+        // Миграция: переносим старый plaintext-блоб в secure storage и удаляем.
+        final legacy = prefs.getString('groups');
+        if (legacy != null && legacy.isNotEmpty) {
+          await SecureStore.writeGroups(legacy);
+          s = legacy;
+        }
+        await prefs.remove('groups');
+      }
+    } catch (e, st) {
+      CrashLog.record(e, st, 'groups.secureLoad');
+    }
     try {
       groups = VpnGroup.decode(s);
       for (final g in groups) {
@@ -17,8 +36,8 @@ mixin AppStateGroups on AppStateBase {
         }
       }
     } catch (e, st) {
-      // Битый/несовместимый JSON групп в prefs не должен ронять запуск, но
-      // молчаливая потеря всех серверов незаметна — фиксируем причину.
+      // Битый/несовместимый JSON групп не должен ронять запуск, но молчаливая
+      // потеря всех серверов незаметна — фиксируем причину.
       CrashLog.record(e, st, 'groups.load');
       groups = [];
     }
@@ -26,7 +45,9 @@ mixin AppStateGroups on AppStateBase {
 
   @override
   void _saveGroups() {
-    prefs.setString('groups', VpnGroup.encode(groups));
+    // Пишем в зашифрованное хранилище (fire-and-forget, как было с prefs).
+    // ignore: discarded_futures
+    SecureStore.writeGroups(VpnGroup.encode(groups));
   }
 
   // ═════ Избранное ═════

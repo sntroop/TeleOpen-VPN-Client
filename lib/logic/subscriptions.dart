@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -50,6 +51,15 @@ class SubscriptionLoader {
 
   static Future<SubscriptionLoadResult> load(String url) async {
     final trimmed = url.trim();
+
+    // HIGH-1: подписка фетчится по URL, который ввёл пользователь/получен из
+    // маркета — без проверки это SSRF (можно заставить приложение ходить на
+    // 127.0.0.1, метадату облака 169.254.169.254, внутреннюю сеть). Разрешаем
+    // только http/https на публичные адреса; внутренние диапазоны режем.
+    final guard = await _validateSubUrl(trimmed);
+    if (guard != null) {
+      return SubscriptionLoadResult(nodes: [], error: guard);
+    }
 
     http.Response? res;
     String? lastError;
@@ -165,6 +175,63 @@ class SubscriptionLoader {
     );
   }
 
+  /// Возвращает текст ошибки, если URL небезопасен для фетча (SSRF), иначе null.
+  static Future<String?> _validateSubUrl(String raw) async {
+    final uri = Uri.tryParse(raw);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return 'Некорректный URL подписки';
+    }
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      return 'Поддерживаются только http/https подписки';
+    }
+    // Резолвим хост и проверяем КАЖДЫЙ адрес: достаточно одного внутреннего,
+    // чтобы отклонить (защита от DNS-rebinding в т.ч.).
+    List<InternetAddress> addrs;
+    try {
+      // Если host — уже IP-литерал, lookup вернёт его же.
+      addrs = await InternetAddress.lookup(uri.host)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      return 'Не удалось проверить адрес подписки';
+    }
+    if (addrs.isEmpty) return 'Адрес подписки не резолвится';
+    for (final a in addrs) {
+      if (_isPrivateAddress(a)) {
+        return 'Адрес подписки указывает на внутреннюю сеть — отклонено';
+      }
+    }
+    return null;
+  }
+
+  /// true для loopback/private/link-local/multicast/CGNAT и cloud-metadata.
+  static bool _isPrivateAddress(InternetAddress a) {
+    if (a.isLoopback || a.isLinkLocal || a.isMulticast) return true;
+    final raw = a.rawAddress;
+    if (a.type == InternetAddressType.IPv4 && raw.length == 4) {
+      final b0 = raw[0], b1 = raw[1];
+      if (b0 == 10) return true;                       // 10.0.0.0/8
+      if (b0 == 127) return true;                      // 127.0.0.0/8
+      if (b0 == 0) return true;                        // 0.0.0.0/8
+      if (b0 == 169 && b1 == 254) return true;         // link-local / metadata
+      if (b0 == 172 && b1 >= 16 && b1 <= 31) return true; // 172.16/12
+      if (b0 == 192 && b1 == 168) return true;         // 192.168/16
+      if (b0 == 100 && b1 >= 64 && b1 <= 127) return true; // 100.64/10 CGNAT
+      return false;
+    }
+    if (a.type == InternetAddressType.IPv6 && raw.length == 16) {
+      if (raw[0] == 0xfe && (raw[1] & 0xc0) == 0x80) return true; // fe80::/10
+      if ((raw[0] & 0xfe) == 0xfc) return true;        // fc00::/7 ULA
+      // IPv4-mapped ::ffff:a.b.c.d → проверяем встроенный v4
+      final isV4Mapped = raw.take(10).every((x) => x == 0) &&
+          raw[10] == 0xff && raw[11] == 0xff;
+      if (isV4Mapped) {
+        return _isPrivateAddress(InternetAddress.fromRawAddress(raw.sublist(12)));
+      }
+      return false;
+    }
+    return false;
+  }
+
   static bool _isValidBody(String body) {
     final t = body.trim();
     if (t.isEmpty) return false;
@@ -260,9 +327,27 @@ class SubscriptionLoader {
           final fp = reality['fingerprint']?.toString() ?? 'chrome';
           final pbk = reality['publicKey']?.toString() ?? '';
           final sid = reality['shortId']?.toString() ?? '';
-          final uri = 'vless://$userId@$address:$port'
-              '?security=$security&sni=$sni&fp=$fp&pbk=$pbk&sid=$sid'
-              '&type=$network&flow=$flow#${Uri.encodeComponent(remark)}';
+          // HIGH-2: значения берутся из недоверенного JSON. Собираем URI через
+          // Uri(...) — он сам percent-кодирует userInfo/query/fragment, поэтому
+          // символы `&`, `#`, пробелы и т.п. не могут «вырваться» и подменить
+          // другие параметры (инъекция в строку конфига).
+          final portNum = port is int ? port : int.tryParse('$port');
+          final uri = Uri(
+            scheme: 'vless',
+            userInfo: userId,
+            host: address,
+            port: portNum,
+            queryParameters: {
+              'security': security,
+              'sni': sni,
+              'fp': fp,
+              'pbk': pbk,
+              'sid': sid,
+              'type': network,
+              'flow': flow,
+            },
+            fragment: remark,
+          ).toString();
           final node = parseUri(uri);
           if (node != null) nodes.add(node);
         } catch (_) {}

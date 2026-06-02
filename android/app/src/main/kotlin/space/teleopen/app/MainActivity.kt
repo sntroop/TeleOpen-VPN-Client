@@ -326,6 +326,9 @@ class MainActivity : FlutterActivity() {
                         val pkg = call.argument<String>("package") ?: ""
                         if (url.isEmpty() || pkg.isEmpty()) {
                             result.error("BAD_ARGS", "url и package обязательны", null)
+                        } else if (!isAllowedProxyScheme(url)) {
+                            // LOW-3: не пускаем произвольные схемы в ACTION_VIEW.
+                            result.error("BAD_SCHEME", "Недопустимая схема ссылки", null)
                         } else {
                             try {
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
@@ -352,6 +355,9 @@ class MainActivity : FlutterActivity() {
                         val url = call.argument<String>("url") ?: ""
                         if (url.isEmpty()) {
                             result.error("BAD_ARGS", "url обязателен", null)
+                        } else if (!isAllowedProxyScheme(url)) {
+                            // LOW-3: валидируем схему перед ACTION_VIEW.
+                            result.error("BAD_SCHEME", "Недопустимая схема ссылки", null)
                         } else {
                             try {
                                 val view = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -494,6 +500,19 @@ class MainActivity : FlutterActivity() {
      * На API 28+ читаем через GET_SIGNING_CERTIFICATES (apkContentsSigners),
      * на старых — через устаревший GET_SIGNATURES.
      */
+    /**
+     * LOW-3: allowlist схем для deep-link прокси. url приходит из Dart и идёт в
+     * ACTION_VIEW — без проверки можно было бы попросить открыть произвольную
+     * intent-схему. Разрешаем только то, что реально нужно для прокси-ссылок.
+     */
+    private fun isAllowedProxyScheme(url: String): Boolean {
+        val scheme = (Uri.parse(url).scheme ?: "").lowercase()
+        return scheme in setOf(
+            "tg", "https", "http",
+            "socks", "socks5", "ss", "vless", "vmess", "trojan",
+        )
+    }
+
     private fun signingCertSha256(): String {
         val sig: ByteArray = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val info = packageManager.getPackageInfo(

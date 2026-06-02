@@ -8,8 +8,17 @@
 part of 'app_state.dart';
 
 mixin AppStateFailover on AppStateBase {
-  /// Все ноды из всех групп — пул кандидатов для переключения.
-  List<VpnNode> get _allNodes => [for (final g in groups) ...g.nodes];
+  /// MED-6: кандидаты для failover берутся ТОЛЬКО из той же подписки (группы),
+  /// что и упавшая нода. Иначе автопереключение могло увести трафик к
+  /// серверу другого, потенциально недоверенного провайдера. Если группу
+  /// упавшей ноды определить не удалось — возвращаем пустой пул (безопасный
+  /// дефолт: не переключаемся вслепую по всем подпискам).
+  List<VpnNode> _candidatePool(String failedId) {
+    for (final g in groups) {
+      if (g.nodes.any((n) => n.id == failedId)) return g.nodes;
+    }
+    return const [];
+  }
 
   /// Сбросить эпизод failover (вызывается при чистом пользовательском коннекте).
   void _resetFailover() => _failover.reset();
@@ -30,7 +39,7 @@ mixin AppStateFailover on AppStateBase {
     if (!settings.autoFailover) return;
     if (_failover.userStopped) return;
 
-    final candidate = _failover.nextCandidate(_allNodes, failedId);
+    final candidate = _failover.nextCandidate(_candidatePool(failedId), failedId);
     if (candidate == null) {
       // некуда переключаться или попытки исчерпаны — оставляем как есть
       lastError = _failover.exhausted

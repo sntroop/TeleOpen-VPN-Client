@@ -26,4 +26,18 @@ class SecureStore {
   static Future<void> writeJwt(String value) =>
       _storage.write(key: _kJwt, value: value);
   static Future<void> deleteJwt() => _storage.delete(key: _kJwt);
+
+  // ─── VPN-ноды/подписки (HIGH-5) ──────────────────────────────────────────
+  // JSON-блоб всех групп с rawUri (содержат пароли/UUID). Раньше лежал в plain
+  // SharedPreferences под ключом 'groups'.
+  static const _kGroups = 'groups';
+  static Future<String?> readGroups() => _storage.read(key: _kGroups);
+  static Future<void> writeGroups(String value) =>
+      _storage.write(key: _kGroups, value: value);
+
+  // ─── Секреты настроек (HIGH-5) ───────────────────────────────────────────
+  // ec_secret (секрет External Controller) и port_auth (логин:пароль прокси).
+  static Future<String?> readSecret(String key) => _storage.read(key: key);
+  static Future<void> writeSecret(String key, String value) =>
+      _storage.write(key: key, value: value);
 }

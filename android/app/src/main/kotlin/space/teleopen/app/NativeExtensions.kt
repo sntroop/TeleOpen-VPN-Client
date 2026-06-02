@@ -6,7 +6,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -71,13 +70,20 @@ object NativeExtensions {
      * вернуть абсолютный путь. kind = geoip / geosite / country / asn.
      */
     fun copyGeoFile(ctx: Context, uri: Uri, kind: String): String? {
+        // HIGH-3: kind приходит из Dart и идёт в имя файла. Без allowlist
+        // значение вида "../../databases/x" вырвало бы запись за пределы geo/.
         val ext = when (kind) {
             "geoip", "country" -> "dat"
+            "geosite" -> "dat"
             "asn" -> "mmdb"
-            else -> "dat"
+            else -> return null   // неизвестный kind — не пишем ничего
         }
         val dir = File(ctx.filesDir, "geo").apply { mkdirs() }
         val out = File(dir, "$kind.$ext")
+        // Двойная страховка: путь результата обязан остаться внутри geo/.
+        if (!out.canonicalPath.startsWith(dir.canonicalPath + File.separator)) {
+            return null
+        }
         ctx.contentResolver.openInputStream(uri).use { input ->
             if (input == null) return null
             FileOutputStream(out).use { os ->
@@ -206,15 +212,18 @@ object NativeExtensions {
      */
     private fun ipApiLookup(ip: String): Pair<String, String> {
         return try {
-            val url = URL("http://ip-api.com/json/$ip?fields=org,country,countryCode")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            // MED-1: HTTPS-гео (ip-api отдаёт https только на pro). ipwho.is —
+            // бесплатный, без ключа, по HTTPS.
+            val url = URL("https://ipwho.is/$ip")
+            val conn = (url.openConnection() as HttpsURLConnection).apply {
                 connectTimeout = 3000
                 readTimeout = 3000
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val obj = JSONObject(body)
-            val org = obj.optString("org", "Unknown")
-            val cc = obj.optString("countryCode", obj.optString("country", "??"))
+            val org = obj.optJSONObject("connection")?.optString("org", "")
+                ?.ifEmpty { null } ?: "Unknown"
+            val cc = obj.optString("country_code", "??")
             org to cc
         } catch (_: Throwable) {
             "Unknown" to "??"
@@ -315,15 +324,16 @@ object NativeExtensions {
     private fun checkTzVsGeo(): Map<String, Any?> {
         return try {
             val deviceTz = TimeZone.getDefault().id
-            val url = URL("http://ip-api.com/json/?fields=timezone,countryCode")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            // MED-1: HTTPS-гео своего внешнего IP (ipwho.is, без ключа).
+            val url = URL("https://ipwho.is/")
+            val conn = (url.openConnection() as HttpsURLConnection).apply {
                 connectTimeout = 5000
                 readTimeout = 5000
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val obj = JSONObject(body)
-            val ipTz = obj.optString("timezone", "")
-            val cc = obj.optString("countryCode", "")
+            val ipTz = obj.optJSONObject("timezone")?.optString("id", "") ?: ""
+            val cc = obj.optString("country_code", "")
 
             // Сравниваем первый сегмент TZ (Europe, America, Asia, ...)
             val devContinent = deviceTz.substringBefore("/", deviceTz)

@@ -66,17 +66,19 @@ class Geolocation {
     final ip = await _resolveDns(host);
     if (ip == null || _isUselessAddress(ip)) return null;
 
-    // 2) Спрашиваем ip-api по IP
+    // 2) Спрашиваем гео по IP.
+    // MED-1: ip-api.com даёт HTTPS только на платном тарифе — по HTTP запрос с
+    // IP ноды утекал бы открытым текстом. Используем бесплатный HTTPS ipwho.is.
     try {
       final r = await http.get(
-        Uri.parse('http://ip-api.com/json/$ip?fields=lat,lon,country,city,status'),
+        Uri.parse('https://ipwho.is/$ip?fields=latitude,longitude,country,city,success'),
       ).timeout(const Duration(seconds: 5));
       if (r.statusCode != 200) return null;
       final j = jsonDecode(r.body);
-      if (j['status'] != 'success') return null;
+      if (j['success'] != true) return null;
 
-      final lat = (j['lat'] as num?)?.toDouble();
-      final lng = (j['lon'] as num?)?.toDouble();
+      final lat = (j['latitude'] as num?)?.toDouble();
+      final lng = (j['longitude'] as num?)?.toDouble();
       if (lat == null || lng == null) return null;
       // защита от нулевых координат (0,0) которые API иногда отдаёт
       if (lat == 0.0 && lng == 0.0) return null;

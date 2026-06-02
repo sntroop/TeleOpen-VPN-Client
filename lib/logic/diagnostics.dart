@@ -201,12 +201,19 @@ class DiagnosticsRunner {
     } else {
       _update('tls', (s) => s.status = DiagStatus.running);
       final tlsSw = Stopwatch()..start();
+      // MED-3: НЕ принимаем любой сертификат молча. Для диагностики коннект
+      // всё же завершаем (VPN-серверы часто маскируют/самоподписывают cert),
+      // но факт невалидности фиксируем и показываем как warn, а не тихий OK.
+      var badCert = false;
       try {
         final host = sni.isNotEmpty ? sni : node.address;
         final sock = await SecureSocket.connect(
           node.address,
           node.port,
-          onBadCertificate: (_) => true, // VPN-серверы часто маскируют сертификаты
+          onBadCertificate: (_) {
+            badCert = true;
+            return true; // продолжаем только ради замера; результат пометим warn
+          },
           timeout: const Duration(seconds: 6),
           context: SecurityContext(withTrustedRoots: true),
           supportedProtocols: ['h2', 'http/1.1'],
@@ -217,9 +224,14 @@ class DiagnosticsRunner {
         final subject = peerCert?.subject ?? '?';
         sock.destroy();
         _update('tls', (s) {
-          s.status = DiagStatus.ok;
-          s.primary = '${tlsSw.elapsedMilliseconds} мс';
-          s.detail = 'SNI: $host · ALPN: $cipher · CN: ${_shortSubject(subject)}';
+          s.status = badCert ? DiagStatus.warn : DiagStatus.ok;
+          s.primary = badCert
+              ? 'Cert не доверен'
+              : '${tlsSw.elapsedMilliseconds} мс';
+          s.detail = badCert
+              ? 'Сертификат не прошёл проверку (самоподписан/чужой CN). '
+                  'SNI: $host · CN: ${_shortSubject(subject)}'
+              : 'SNI: $host · ALPN: $cipher · CN: ${_shortSubject(subject)}';
           s.elapsed = tlsSw.elapsed;
         });
       } catch (e) {

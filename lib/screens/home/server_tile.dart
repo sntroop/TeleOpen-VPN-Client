@@ -462,6 +462,15 @@ class _ServerTileState extends State<_ServerTile> with SingleTickerProviderState
                     '${node.pingMs} ms',
                     style: t.textStyles.caption1.copyWith(color: _pingColor(node.pingMs, c)),
                   ),
+                // MED-4: предупреждаем, что у ноды отключена проверка TLS.
+                if (node.hasInsecureTls) ...[
+                  const SizedBox(width: 6),
+                  Icon(CupertinoIcons.exclamationmark_shield_fill,
+                      size: 13, color: c.orange),
+                  const SizedBox(width: 2),
+                  Text('TLS без проверки',
+                      style: t.textStyles.caption2.copyWith(color: c.orange)),
+                ],
               ]),
             ]),
           ),

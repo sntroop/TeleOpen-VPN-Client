@@ -202,12 +202,47 @@ class AppState extends AppStateBase
         AppStateFailover {
   AppState(super.prefs) {
     _loadFavorites();
-    _loadGroups();
     _loadMtProtoGroups();
     _loadUser();
     _loadPerAppPresets();
     _initBridge();
-    if (settings.autoConnect) _autoConnect();
+    // HIGH-5: ноды и секреты-настройки теперь в зашифрованном хранилище —
+    // загрузка асинхронна. autoConnect стартует только после загрузки групп.
+    // ignore: discarded_futures
+    _bootstrapSecure();
+  }
+
+  Future<void> _bootstrapSecure() async {
+    await _loadGroups();         // secure storage + миграция старого prefs-ключа
+    await _loadSecureSettings(); // ec_secret/port_auth: миграция в Keystore
+    notifyListeners();
+    if (settings.autoConnect) await _autoConnect();
+  }
+
+  /// Подтягивает ec_secret/port_auth из защищённого хранилища в settings и
+  /// одноразово мигрирует старые plaintext-значения из prefs (s_ecSecret/
+  /// s_portAuth), после чего удаляет их из prefs.
+  Future<void> _loadSecureSettings() async {
+    try {
+      // Миграция старых plaintext-ключей.
+      for (final pair in const [
+        ('s_ecSecret', 'ec_secret'),
+        ('s_portAuth', 'port_auth'),
+      ]) {
+        final legacy = prefs.getString(pair.$1);
+        if (legacy != null && legacy.isNotEmpty && legacy != 'Не менять') {
+          await SecureStore.writeSecret(pair.$2, legacy);
+        }
+        await prefs.remove(pair.$1);
+      }
+      final ec = await SecureStore.readSecret('ec_secret');
+      final pa = await SecureStore.readSecret('port_auth');
+      if (ec != null && ec.isNotEmpty) settings.ecSecret = ec;
+      if (pa != null && pa.isNotEmpty) settings.portAuth = pa;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('AppState._loadSecureSettings: $e');
+    }
   }
 
   void _loadFavorites() {
@@ -277,6 +312,16 @@ class AppState extends AppStateBase
   void updateSettings(AppSettings s) {
     settings = s;
     s.save(prefs);
+    // HIGH-5: секреты (ec_secret/port_auth) не пишутся в prefs из save() —
+    // храним их только в зашифрованном хранилище.
+    if (s.ecSecret.isNotEmpty && s.ecSecret != 'Не менять') {
+      // ignore: discarded_futures
+      SecureStore.writeSecret('ec_secret', s.ecSecret);
+    }
+    if (s.portAuth.isNotEmpty && s.portAuth != 'Не менять') {
+      // ignore: discarded_futures
+      SecureStore.writeSecret('port_auth', s.portAuth);
+    }
     notifyListeners();
     // Применяем "горячо" — ядро/нативщина решает, нужен ли рестарт.
     // Не await: UI не должен моргать на каждом тоггле.

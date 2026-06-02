@@ -130,5 +130,20 @@ class Hysteria2Manager {
     }
     _process = null;
     _exited = true;
+    // HIGH-4: hy2_config.json содержит auth/obfs-password в открытом виде и
+    // раньше оставался на диске после отключения. Удаляем его при остановке.
+    await _deleteConfigFile();
+  }
+
+  static Future<void> _deleteConfigFile() async {
+    try {
+      final configDir = await getApplicationSupportDirectory();
+      final configFile = File('${configDir.path}/hy2_config.json');
+      if (await configFile.exists()) {
+        await configFile.delete();
+      }
+    } catch (e) {
+      CrashLog.note('hy2/stop', 'не удалось удалить конфиг: $e');
+    }
   }
 }

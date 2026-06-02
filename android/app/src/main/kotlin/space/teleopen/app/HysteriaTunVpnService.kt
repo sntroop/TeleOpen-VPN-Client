@@ -122,6 +122,22 @@ class HysteriaTunVpnService : VpnService() {
             } catch (_: Throwable) {}
         }
 
+        // CRIT-3: дамп полного конфига в лог по умолчанию выключен. Включать
+        // только локально при отладке — лог пишется на диск и переживает сессию.
+        const val DEBUG_CONFIG_DUMP = false
+
+        /**
+         * Маскирует секреты в JSON-конфиге перед записью в лог: значения полей
+         * id/password/auth/privateKey/publicKey/secret/psk и т.п. заменяются на
+         * «***». Грубая, но достаточная защита для отладочного дампа.
+         */
+        fun redactSecrets(config: String): String {
+            val keys = "id|uuid|password|pass|auth|secret|psk|privateKey|" +
+                "publicKey|preSharedKey|token|obfs-password"
+            val rx = Regex("\"($keys)\"\\s*:\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE)
+            return rx.replace(config) { m -> "\"${m.groupValues[1]}\":\"***\"" }
+        }
+
         fun flog(tag: String, msg: String) {
             android.util.Log.i(tag, msg)
             synchronized(logLock) {
@@ -353,10 +369,14 @@ class HysteriaTunVpnService : VpnService() {
             // 1) Готовим конфиг с TUN-inbound
             val config = ensureTunInbound(rawConfig)
             flog(TAG, "config after ensureTunInbound, len=${config.length}")
-            // Печатаем конфиг по кусочкам — в logcat он бы порезался, в файл влезет
-            flog(TAG, "=== CONFIG START ===")
-            config.chunked(500).forEach { flog(TAG, it) }
-            flog(TAG, "=== CONFIG END ===")
+            // CRIT-3: НЕ дампим конфиг в файловый лог — он содержит пароли/UUID/
+            // reality-ключи в открытом виде, а лог переживает сессию на диске.
+            // Дамп только при явно включённом локальном флаге и с маскировкой
+            // секретов. По умолчанию выключено.
+            @Suppress("ConstantConditionIf")
+            if (DEBUG_CONFIG_DUMP) {
+                flog(TAG, "config (redacted): ${redactSecrets(config).take(4000)}")
+            }
 
             // 2) Поднимаем TUN
             pfd = buildTunInterface(remark) ?: run {

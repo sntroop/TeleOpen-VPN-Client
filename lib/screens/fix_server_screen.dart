@@ -263,6 +263,35 @@ class _FixServerScreenState extends State<FixServerScreen> {
     return ok;
   }
 
+  /// HIGH-7: спрашиваем подтверждение перед тем как ИИ сменит VPN-сервер.
+  Future<bool> _confirmServerSwitch(FixAction action) async {
+    if (!mounted) return false;
+    final where = action.targetCountry != null
+        ? 'на сервер в стране ${action.targetCountry}'
+        : 'на лучший по пингу сервер';
+    final ok = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Сменить сервер?'),
+        content: Text(
+          'ИИ предлагает переключиться $where.\n\n${action.explanation}',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Сменить'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
   Future<void> _runSteps() async {
     final state = AppStateScope.of(context, listen: false);
 
@@ -279,6 +308,7 @@ class _FixServerScreenState extends State<FixServerScreen> {
         changed = await AiFixer.applyAction(
           state: state,
           action: _steps[i].action,
+          confirmServerSwitch: _confirmServerSwitch,
         );
       } catch (e, st) {
         // Шаг плана не применился — помечаем как пропущенный, но фиксируем

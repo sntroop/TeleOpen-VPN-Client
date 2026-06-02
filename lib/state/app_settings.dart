@@ -373,7 +373,10 @@ class AppSettings {
         portRedir:       p.getString('s_portRedir') ?? 'Не менять',
         portTproxy:      p.getString('s_portTproxy') ?? 'Не менять',
         portMixed:       p.getString('s_portMixed') ?? 'Не менять',
-        portAuth:        p.getString('s_portAuth') ?? 'Не менять',
+        // HIGH-5: portAuth (логин:пароль прокси) хранится в зашифрованном
+        // хранилище, а не в prefs. Здесь дефолт-сентинел; реальное значение
+        // подтянет AppState._loadSecureSettings().
+        portAuth:        'Не менять',
         portAllowLan:    p.getString('s_portAllowLan') ?? 'Не менять',
         portIpv6:        p.getString('s_portIpv6') ?? 'Не менять',
         portBindAddress: p.getString('s_portBindAddress') ?? 'Не менять',
@@ -383,7 +386,8 @@ class AppSettings {
         ecAddressTls:          p.getString('s_ecAddressTls') ?? 'Не менять',
         ecAllowOrigins:        p.getString('s_ecAllowOrigins') ?? 'Не менять',
         ecAllowPrivateNetwork: p.getString('s_ecAllowPrivateNetwork') ?? 'Не менять',
-        ecSecret:              p.getString('s_ecSecret') ?? 'Не менять',
+        // HIGH-5: ecSecret в зашифрованном хранилище (см. portAuth выше).
+        ecSecret:              'Не менять',
         ecMode:                p.getString('s_ecMode') ?? 'Не менять',
         ecLogLevel:            p.getString('s_ecLogLevel') ?? 'Не менять',
         ecHosts:               p.getString('s_ecHosts') ?? 'Не менять',
@@ -475,7 +479,8 @@ class AppSettings {
     p.setString('s_portRedir', portRedir);
     p.setString('s_portTproxy', portTproxy);
     p.setString('s_portMixed', portMixed);
-    p.setString('s_portAuth', portAuth);
+    // HIGH-5: s_portAuth НЕ пишем в prefs — секрет уходит в SecureStore
+    // (см. AppState.updateSettings / _loadSecureSettings).
     p.setString('s_portAllowLan', portAllowLan);
     p.setString('s_portIpv6', portIpv6);
     p.setString('s_portBindAddress', portBindAddress);
@@ -485,7 +490,7 @@ class AppSettings {
     p.setString('s_ecAddressTls', ecAddressTls);
     p.setString('s_ecAllowOrigins', ecAllowOrigins);
     p.setString('s_ecAllowPrivateNetwork', ecAllowPrivateNetwork);
-    p.setString('s_ecSecret', ecSecret);
+    // HIGH-5: s_ecSecret НЕ пишем в prefs — секрет уходит в SecureStore.
     p.setString('s_ecMode', ecMode);
     p.setString('s_ecLogLevel', ecLogLevel);
     p.setString('s_ecHosts', ecHosts);

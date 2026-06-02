@@ -22,7 +22,7 @@ import 'package:http/http.dart' as http;
 
 import '../main.dart';
 import '../models/vpn_node.dart';
-import 'market_api.dart' show kApiBase;
+import 'market_api.dart' show kApiBase, MarketApi;
 
 // ─── Модели ──────────────────────────────────────────────────────────────────
 
@@ -350,7 +350,7 @@ class AiFixer {
       final raw = dyn.logBuffer ?? dyn.logs ?? dyn.recentLogs;
       if (raw is List) {
         return raw
-            .map((e) => e.toString())
+            .map((e) => _redactSecrets(e.toString()))
             .toList()
             .reversed
             .take(80)
@@ -360,6 +360,28 @@ class AiFixer {
       }
     } catch (_) {}
     return const [];
+  }
+
+  /// HIGH-6: маскирует возможные секреты в строках логов перед отправкой на
+  /// бэкенд (хвост логов может содержать URI ноды с паролем/UUID, reality-ключи).
+  static final List<RegExp> _secretPatterns = [
+    // key=value и key: value для чувствительных ключей
+    RegExp(r'((?:password|pass|auth|secret|psk|pbk|sid|token|obfs-password|'
+        r'privateKey|publicKey|id)\s*[:=]\s*)([^\s&"#]+)',
+        caseSensitive: false),
+    // userInfo в URI: scheme://SECRET@host
+    RegExp(r'(://)([^@/\s]+)(@)'),
+    // голые UUID
+    RegExp(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+        r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
+  ];
+
+  static String _redactSecrets(String line) {
+    var s = line;
+    s = s.replaceAllMapped(_secretPatterns[0], (m) => '${m[1]}***');
+    s = s.replaceAllMapped(_secretPatterns[1], (m) => '${m[1]}***${m[3]}');
+    s = s.replaceAll(_secretPatterns[2], '***');
+    return s;
   }
 
   /// Грубая эвристика: первое слово в имени ноды часто = страна или флаг.
@@ -395,10 +417,16 @@ class AiFixer {
       'snapshot': snapshot.toJson(),
     });
 
+    // HIGH-6: /ai/fix теперь требует JWT (снапшот содержит чувствительные
+    // данные). Без токена бэкенд вернёт 401.
+    final jwt = MarketApi.jwt;
     final r = await http
         .post(
           Uri.parse('$kApiBase/ai/fix'),
-          headers: const {'Content-Type': 'application/json'},
+          headers: {
+            'Content-Type': 'application/json',
+            if (jwt != null) 'Authorization': 'Bearer $jwt',
+          },
           body: body,
         )
         .timeout(_timeout);
@@ -426,9 +454,13 @@ class AiFixer {
   ///
   /// Метод НЕ блокирует — обновление AppSettings и переключение ноды происходят
   /// синхронно, а core-config применяется в фоне через AppState.updateSettings.
+  /// [confirmServerSwitch] вызывается ТОЛЬКО для switch_server: UI обязан
+  /// явно спросить пользователя. Если коллбэк не передан или вернул false —
+  /// сервер не переключается (HIGH-7: ИИ не должен молча менять сервер).
   static Future<bool> applyAction({
     required AppState state,
     required FixAction action,
+    Future<bool> Function(FixAction action)? confirmServerSwitch,
   }) async {
     switch (action.type) {
       case FixActionType.no_change:
@@ -449,6 +481,12 @@ class AiFixer {
         return true;
 
       case FixActionType.switch_server:
+        // HIGH-7: смена VPN-сервера затрагивает, через какой узел идёт весь
+        // трафик пользователя — делать это молча нельзя. Применяем только
+        // после явного подтверждения через UI.
+        if (confirmServerSwitch == null) return false;
+        final approved = await confirmServerSwitch(action);
+        if (!approved) return false;
         return _applyServerSwitch(state, action.targetCountry);
     }
   }

@@ -65,6 +65,12 @@ class VpnNode {
 
   String get protocolLabel => protocol.label;
 
+  /// MED-4: true, если у ноды отключена проверка TLS-сертификата
+  /// (insecure=1 / allowInsecure=1). Такой сервер уязвим к MITM — UI должен
+  /// показывать предупреждающий бейдж.
+  bool get hasInsecureTls =>
+      params['insecure'] == true || params['allowInsecure'] == true;
+
   Map<String, dynamic> toJson() => {
         'id': id, 'name': name, 'address': address, 'port': port,
         'protocol': protocol.name, 'rawUri': rawUri, 'params': params,
