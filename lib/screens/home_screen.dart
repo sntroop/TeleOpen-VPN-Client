@@ -39,6 +39,48 @@ part 'home/server_tile.dart';
 part 'home/mtproto_tile.dart';
 part 'home/info_display.dart';
 
+/// Режимы сортировки списка серверов (выбираются в баре под кнопками).
+enum ServerSort {
+  none,
+  pingAsc,
+  pingDesc,
+  nameAsc,
+  nameDesc,
+  dateNew,
+  dateOld,
+  favFirst,
+  availFirst,
+  protocol,
+}
+
+extension ServerSortX on ServerSort {
+  String get label => switch (this) {
+        ServerSort.none => 'По умолчанию',
+        ServerSort.pingAsc => 'Пинг ↑ (быстрые)',
+        ServerSort.pingDesc => 'Пинг ↓ (медленные)',
+        ServerSort.nameAsc => 'Имя А→Я',
+        ServerSort.nameDesc => 'Имя Я→А',
+        ServerSort.dateNew => 'Сначала новые',
+        ServerSort.dateOld => 'Сначала старые',
+        ServerSort.favFirst => 'Сначала избранные',
+        ServerSort.availFirst => 'Сначала доступные',
+        ServerSort.protocol => 'По протоколу',
+      };
+
+  IconData get icon => switch (this) {
+        ServerSort.none => CupertinoIcons.list_bullet,
+        ServerSort.pingAsc => CupertinoIcons.arrow_up_circle,
+        ServerSort.pingDesc => CupertinoIcons.arrow_down_circle,
+        ServerSort.nameAsc => CupertinoIcons.textformat_abc,
+        ServerSort.nameDesc => CupertinoIcons.textformat_abc,
+        ServerSort.dateNew => CupertinoIcons.clock,
+        ServerSort.dateOld => CupertinoIcons.clock,
+        ServerSort.favFirst => CupertinoIcons.star_fill,
+        ServerSort.availFirst => CupertinoIcons.wifi,
+        ServerSort.protocol => CupertinoIcons.shield_lefthalf_fill,
+      };
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -48,6 +90,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _filterIndex = 0;
+  ServerSort _sortMode = ServerSort.none;
   final ScrollController _scrollCtrl = ScrollController();
   bool _showScrollTop = false;
 
@@ -113,6 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             SliverToBoxAdapter(child: _ActionsRow(state: state)),
+            SliverToBoxAdapter(child: _buildSortBar(context)),
             ..._buildGroups(context, state),
             ..._buildMtProtoGroups(context, state),
             SliverToBoxAdapter(child: SizedBox(height: MediaQuery.of(context).padding.bottom + 24)),
@@ -154,6 +198,159 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Сортировка ─────────────────────────────────────────────────────────
+
+  /// Возвращает НОВЫЙ отсортированный список (не мутирует g.nodes).
+  /// Сортировка стабильная: при равенстве сохраняем исходный порядок (= порядок
+  /// добавления), поэтому он же служит ключом «по дате добавления».
+  List<VpnNode> _applySort(List<VpnNode> nodes) {
+    if (_sortMode == ServerSort.none) return nodes;
+
+    final indexed = [for (var i = 0; i < nodes.length; i++) (i, nodes[i])];
+
+    // Нода без измеренного пинга считается «худшей» — всегда в конец при
+    // сортировке по пингу.
+    int byPing((int, VpnNode) a, (int, VpnNode) b, {required bool asc}) {
+      final pa = a.$2.pingMs, pb = b.$2.pingMs;
+      if (pa == null && pb == null) return a.$1.compareTo(b.$1);
+      if (pa == null) return 1;
+      if (pb == null) return -1;
+      final r = asc ? pa.compareTo(pb) : pb.compareTo(pa);
+      return r != 0 ? r : a.$1.compareTo(b.$1);
+    }
+
+    int tie(int r, (int, VpnNode) a, (int, VpnNode) b) =>
+        r != 0 ? r : a.$1.compareTo(b.$1);
+
+    indexed.sort((a, b) {
+      final na = a.$2, nb = b.$2;
+      return switch (_sortMode) {
+        ServerSort.pingAsc => byPing(a, b, asc: true),
+        ServerSort.pingDesc => byPing(a, b, asc: false),
+        ServerSort.nameAsc =>
+          tie(na.name.toLowerCase().compareTo(nb.name.toLowerCase()), a, b),
+        ServerSort.nameDesc =>
+          tie(nb.name.toLowerCase().compareTo(na.name.toLowerCase()), a, b),
+        ServerSort.dateNew => b.$1.compareTo(a.$1),
+        ServerSort.dateOld => a.$1.compareTo(b.$1),
+        ServerSort.favFirst => tie(
+            (nb.isFavorite ? 1 : 0).compareTo(na.isFavorite ? 1 : 0), a, b),
+        ServerSort.availFirst => tie(
+            (nb.pingMs != null ? 1 : 0).compareTo(na.pingMs != null ? 1 : 0),
+            a, b),
+        ServerSort.protocol =>
+          tie(na.protocolLabel.compareTo(nb.protocolLabel), a, b),
+        ServerSort.none => a.$1.compareTo(b.$1),
+      };
+    });
+    return [for (final e in indexed) e.$2];
+  }
+
+  Widget _buildSortBar(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    final active = _sortMode != ServerSort.none;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _showSortSheet,
+            child: Container(
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: active ? c.blue.withValues(alpha: 0.15) : c.fill,
+                borderRadius: IosShapes.continuous(IosShapes.radiusButton),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(CupertinoIcons.arrow_up_arrow_down,
+                    size: 15, color: active ? c.blue : c.textSecondary),
+                const SizedBox(width: 6),
+                Text(
+                  active ? _sortMode.label : 'Сортировка',
+                  style: t.textStyles.footnote.copyWith(
+                    color: active ? c.blue : c.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ]),
+            ),
+          ),
+          if (active) ...[
+            const SizedBox(width: 8),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _sortMode = ServerSort.none),
+              child: Icon(CupertinoIcons.clear_circled_solid,
+                  size: 18, color: c.textTertiary),
+            ),
+          ],
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  void _showSortSheet() {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => Container(
+        margin: EdgeInsets.fromLTRB(8, 0, 8, MediaQuery.of(context).padding.bottom + 8),
+        decoration: BoxDecoration(
+          color: c.bgSecondary,
+          borderRadius: IosShapes.continuous(IosShapes.radiusXLarge),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 6),
+                width: 36, height: 4,
+                decoration: BoxDecoration(
+                    color: c.textQuaternary, borderRadius: BorderRadius.circular(2)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                child: Row(children: [
+                  Text('Сортировка', style: t.textStyles.headline),
+                  const Spacer(),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Icon(CupertinoIcons.xmark_circle_fill,
+                        size: 28, color: c.textQuaternary),
+                  ),
+                ]),
+              ),
+              for (final m in ServerSort.values)
+                IosListTile(
+                  leadingIcon: m.icon,
+                  leadingIconBg: c.fill,
+                  title: m.label,
+                  trailing: m == _sortMode
+                      ? Icon(CupertinoIcons.check_mark, size: 18, color: c.blue)
+                      : null,
+                  onTap: () {
+                    setState(() => _sortMode = m);
+                    Navigator.of(context).pop();
+                  },
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<Widget> _buildGroups(BuildContext context, AppState state) {
     final t = IosTheme.of(context);
     final c = t.colors;
@@ -185,6 +382,7 @@ class _HomeScreenState extends State<HomeScreen> {
         nodes = nodes.where((n) => n.isFavorite).toList();
       }
       if (nodes.isEmpty && _filterIndex == 1) continue;
+      nodes = _applySort(nodes);
 
       widgets.add(SliverToBoxAdapter(
         child: _GroupHeader(

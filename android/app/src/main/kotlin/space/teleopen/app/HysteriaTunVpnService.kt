@@ -629,6 +629,45 @@ class HysteriaTunVpnService : VpnService() {
             }
             val existingRules = routing.optJSONArray("rules") ?: JSONArray()
             val newRules = JSONArray()
+            // 0) Пользовательские правила (geosite/geoip/домен/IP → proxy|direct|block).
+            // Идут ПЕРВЫМИ: в xray выигрывает первое совпавшее правило, а явные
+            // пользовательские правила должны иметь приоритет над авто-правилами.
+            val userRules = cfg.optJSONArray("routing_rules")
+            if (userRules != null) {
+                for (i in 0 until userRules.length()) {
+                    val r = userRules.optJSONObject(i) ?: continue
+                    val kind = r.optString("kind", "")
+                    val value = r.optString("value", "").trim()
+                    val action = r.optString("action", "proxy")
+                    if (value.isEmpty()) continue
+                    val tag = when (action) {
+                        "direct" -> "direct"
+                        "block" -> "block"
+                        else -> "proxy"
+                    }
+                    val rule = JSONObject().put("type", "field").put("outboundTag", tag)
+                    when (kind) {
+                        "geosite" -> rule.put("domain", JSONArray().put("geosite:$value"))
+                        "geoip" -> rule.put("ip", JSONArray().put("geoip:$value"))
+                        "ip" -> rule.put("ip", JSONArray().put(value))
+                        "domain" -> {
+                            // "*.example.com" → "domain:example.com"; голый домен без
+                            // известного префикса тоже оборачиваем в "domain:" (матч
+                            // домена и поддоменов). Префиксы full:/regexp:/geosite:
+                            // пропускаем как есть для продвинутых пользователей.
+                            val dv = when {
+                                value.startsWith("*.") -> "domain:${value.substring(2)}"
+                                value.contains(":") -> value
+                                else -> "domain:$value"
+                            }
+                            rule.put("domain", JSONArray().put(dv))
+                        }
+                        else -> continue
+                    }
+                    newRules.put(rule)
+                }
+                if (userRules.length() > 0) flog(TAG, "routing: +${userRules.length()} user rules")
+            }
             // 1) Блок рекламы
             if (cfg.optBoolean("block_ads", false)) {
                 newRules.put(JSONObject()

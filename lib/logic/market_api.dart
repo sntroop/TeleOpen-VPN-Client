@@ -97,7 +97,9 @@ class MarketApi {
 
   /// Получить серверы (URI) подписки. Параллельно сервер инкрементит gets_count.
   static Future<({String name, List<MarketNode> nodes})> get(int groupId) async {
-    final r = await http.get(Uri.parse('$kApiBase/market/get/$groupId')).timeout(_timeout);
+    final r = await http
+        .get(Uri.parse('$kApiBase/market/get/$groupId'), headers: _authHeadersNoBody)
+        .timeout(_timeout);
     _check(r);
     final body = jsonDecode(r.body) as Map<String, dynamic>;
     final nodes = ((body['nodes'] as List?) ?? [])

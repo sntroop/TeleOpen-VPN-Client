@@ -79,6 +79,18 @@ class _MarketDetailScreenState extends State<MarketDetailScreen> {
 
   Future<void> _addToMy() async {
     if (_adding || _detail == null) return;
+
+    // Ноды содержат VPN-креды — бэкенд отдаёт их только по валидному JWT.
+    // Если не залогинен, ведём на вход, иначе словим сырой API[401].
+    final state0 = AppStateScope.of(context, listen: false);
+    if (state0.currentUser == null) {
+      final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
+        builder: (_) => const LoginScreen(),
+      ));
+      if (ok != true || state0.currentUser == null) return;
+    }
+    if (!mounted) return;
+
     setState(() => _adding = true);
     try {
       final res = await MarketApi.get(widget.groupId);

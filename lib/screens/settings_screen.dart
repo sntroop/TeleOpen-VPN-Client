@@ -29,6 +29,7 @@ import 'proxy_visibility_screen.dart';
 import 'statistics_screen.dart';
 import 'fix_server_screen.dart';
 import 'privacy_screen.dart';
+import 'routing_rules_screen.dart';
 
 part 'settings/parts.dart';
 
@@ -76,12 +77,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       dns:                appSettings.dns,
       packetAnalysis:     appSettings.packetAnalysis,
       useMux:             appSettings.useMux,
+      pingMode:           appSettings.pingMode,
+      subAutoUpdate:      appSettings.subAutoUpdate,
+      subUpdateHours:     appSettings.subUpdateHours,
       region:             appSettings.region,
       balancerStrategy:   appSettings.balancerStrategy,
       blockAds:           appSettings.blockAds,
       bypassLan:          appSettings.bypassLan,
       resolveDestination: appSettings.resolveDestination,
       ipv6Route:          appSettings.ipv6Route,
+      routingRules:       appSettings.routingRules.map((r) => r.copy()).toList(),
     );
     _loadVersion();
   }
@@ -218,6 +223,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onChanged: (v) => _update((s) => s.useMux = v),
                     ),
                   ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.speedometer,
+                    leadingIconBg: c.fill,
+                    title: 'Тип пинга',
+                    subtitle: _pingModeSubtitle(_s.pingMode),
+                    showChevron: true,
+                    onTap: () => _showOptions(
+                      title: 'Тип пинга',
+                      options: kPingModes,
+                      current: _s.pingMode,
+                      onSelect: (v) => _update((s) => s.pingMode = v),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -314,6 +332,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onSelect: (v) => _update((s) => s.ipv6Route = v),
                     ),
                   ),
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.list_bullet_indent,
+                    leadingIconBg: c.fill,
+                    title: 'Правила маршрутизации',
+                    subtitle: _s.routingRules.isEmpty
+                        ? 'geosite / geoip / домен → proxy·direct·block'
+                        : '${_s.routingRules.length} правил',
+                    showChevron: true,
+                    onTap: () async {
+                      await Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => RoutingRulesScreen(
+                          initial: _s.routingRules,
+                          onChanged: (rules) =>
+                              _update((s) => s.routingRules = rules),
+                        ),
+                      ));
+                      if (mounted) setState(() {}); // обновить подпись со счётчиком
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            // ── ПОДПИСКИ ─────────────────────────────────────────────────
+            SliverToBoxAdapter(
+              child: IosListSection(
+                header: 'Подписки',
+                footer: 'Периодически перезагружает серверы из URL-подписок и из маркета в фоне.',
+                children: [
+                  IosListTile(
+                    leadingIcon: CupertinoIcons.arrow_2_circlepath_circle,
+                    leadingIconBg: c.green,
+                    title: 'Автообновление',
+                    trailing: IosSwitch(
+                      value: _s.subAutoUpdate,
+                      onChanged: (v) => _update((s) {
+                        s.subAutoUpdate = v;
+                        // Включили без выбранного интервала — ставим разумный дефолт.
+                        if (v && s.subUpdateHours <= 0) s.subUpdateHours = 12;
+                      }),
+                    ),
+                  ),
+                  if (_s.subAutoUpdate)
+                    IosListTile(
+                      leadingIcon: CupertinoIcons.clock,
+                      leadingIconBg: c.fill,
+                      title: 'Интервал',
+                      subtitle: _subIntervalLabel(_s.subUpdateHours),
+                      showChevron: true,
+                      onTap: () => _showOptions(
+                        title: 'Интервал обновления',
+                        options: kSubUpdateIntervals
+                            .where((h) => h > 0)
+                            .map(_subIntervalLabel)
+                            .toList(),
+                        current: _subIntervalLabel(_s.subUpdateHours),
+                        onSelect: (v) =>
+                            _update((s) => s.subUpdateHours = _subIntervalHours(v)),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -551,6 +629,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
+  }
+
+  // ─── Подписи для пикеров ─────────────────────────────────────────────────
+  String _pingModeSubtitle(String mode) => switch (mode) {
+        'HTTP' => 'Реальная задержка через туннель',
+        'UDP' => 'UDP-зонд (best-effort)',
+        _ => 'TCP-handshake до сервера',
+      };
+
+  String _subIntervalLabel(int hours) {
+    if (hours <= 0) return 'Выключено';
+    if (hours % 24 == 0) {
+      final d = hours ~/ 24;
+      return d == 1 ? 'Раз в сутки' : 'Раз в $d сут';
+    }
+    return 'Каждые $hours ч';
+  }
+
+  int _subIntervalHours(String label) {
+    for (final h in kSubUpdateIntervals) {
+      if (h > 0 && _subIntervalLabel(h) == label) return h;
+    }
+    return 12;
   }
 
   // ─── Picker: универсальный выбор из списка ───────────────────────────────

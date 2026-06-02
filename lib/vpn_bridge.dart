@@ -162,6 +162,29 @@ class VpnBridge {
     }
   }
 
+  /// Реальная задержка outbound'а через ядро (xray measureOutboundDelay):
+  /// поднимает временный инстанс по [config] и делает HTTP-запрос к [url],
+  /// возвращая RTT в мс. null = недостижимо/ошибка. Туннель поднимать не нужно.
+  Future<int?> measureDelay({
+    required String config,
+    String url = 'https://www.gstatic.com/generate_204',
+  }) async {
+    try {
+      final ms = await _method.invokeMethod<int>('measureDelay', {
+        'config': config,
+        'url': url,
+      });
+      if (ms == null || ms < 0) return null;
+      return ms;
+    } on PlatformException catch (e) {
+      debugPrint('=== measureDelay error: ${e.message}');
+      return null;
+    } catch (e) {
+      debugPrint('=== measureDelay error: $e');
+      return null;
+    }
+  }
+
   Future<String?> getNativeLibDir() async {
     try {
       return await _method.invokeMethod<String>('getNativeLibDir');

@@ -81,6 +81,9 @@ abstract class AppStateBase extends ChangeNotifier {
   // ═════ Пинг ═════
   Timer? _pingNotifyTimer;
 
+  // ═════ Автообновление подписок ═════
+  Timer? _subRefreshTimer;
+
   // ═════ Проактивная проба связи ═════
   Timer? _probeTimer;
   bool _probeInFlight = false;
@@ -181,11 +184,16 @@ abstract class AppStateBase extends ChangeNotifier {
   Future<void> connect(VpnNode node);                          // AppStateConnection
   void addMtProtoProxy(MtProtoProxy proxy, {String? toGroupId}); // AppStateMtProto
   Future<void> _tryFailover({required String failedId});       // AppStateFailover
+  Future<void> refreshAllSubscriptions();                      // AppStateSubscriptions
+  // Перенастроить таймер автообновления подписок под текущие settings.
+  // Реализуется в AppState (видит и settings, и mixin подписок).
+  void reconfigureSubscriptionAutoUpdate();
 
   @override
   void dispose() {
     _timer?.cancel();
     _probeTimer?.cancel();
+    _subRefreshTimer?.cancel();
     bridge.dispose();
     super.dispose();
   }
@@ -216,7 +224,31 @@ class AppState extends AppStateBase
     await _loadGroups();         // secure storage + миграция старого prefs-ключа
     await _loadSecureSettings(); // ec_secret/port_auth: миграция в Keystore
     notifyListeners();
+    reconfigureSubscriptionAutoUpdate(); // запустить таймер автообновления подписок
     if (settings.autoConnect) await _autoConnect();
+  }
+
+  /// Перенастраивает таймер автообновления подписок под текущие settings.
+  /// Вызывается после загрузки групп и при каждом изменении настроек.
+  @override
+  void reconfigureSubscriptionAutoUpdate() {
+    _subRefreshTimer?.cancel();
+    _subRefreshTimer = null;
+    if (!settings.subAutoUpdate || settings.subUpdateHours <= 0) return;
+
+    final interval = Duration(hours: settings.subUpdateHours);
+    // Догоняем пропущенное окно: если с прошлого обновления прошло больше
+    // интервала (или его не было) — обновляем сразу.
+    final last = prefs.getInt('last_sub_refresh') ?? 0;
+    final elapsedMs = DateTime.now().millisecondsSinceEpoch - last;
+    if (last == 0 || elapsedMs >= interval.inMilliseconds) {
+      // ignore: discarded_futures
+      refreshAllSubscriptions();
+    }
+    _subRefreshTimer = Timer.periodic(interval, (_) {
+      // ignore: discarded_futures
+      refreshAllSubscriptions();
+    });
   }
 
   /// Подтягивает ec_secret/port_auth из защищённого хранилища в settings и
@@ -327,6 +359,8 @@ class AppState extends AppStateBase
     // Не await: UI не должен моргать на каждом тоггле.
     // ignore: discarded_futures
     bridge.applyCoreConfig(s.toCoreConfig());
+    // Тумблер/интервал автообновления подписок мог измениться — перезапускаем.
+    reconfigureSubscriptionAutoUpdate();
   }
 }
 

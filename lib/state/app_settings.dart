@@ -6,7 +6,20 @@
 //
 // Вынесено из main.dart при разбиении монолита — поведение не менялось.
 
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/routing_rule.dart';
+
+/// Тип измерения пинга нод.
+/// tcp  — handshake до host:port (быстро, без ядра);
+/// http — реальная задержка через туннель (xray measureOutboundDelay);
+/// udp  — best-effort датаграмм-зонд до host:port.
+const kPingModes = <String>['TCP', 'HTTP', 'UDP'];
+
+/// Варианты интервала автообновления подписок (часы; 0 = выключено).
+const kSubUpdateIntervals = <int>[0, 6, 12, 24, 48];
 
 class AppSettings {
   // ── Соединение ──────────────────────────────────────────────────────────
@@ -19,6 +32,13 @@ class AppSettings {
   bool packetAnalysis;
   bool useMux;
 
+  // ── Пинг ──────────────────────────────────────────────────────────────────
+  String pingMode; // 'TCP' | 'HTTP' | 'UDP' (см. kPingModes)
+
+  // ── Подписки ────────────────────────────────────────────────────────────
+  bool subAutoUpdate;
+  int subUpdateHours; // 0 = выкл (см. kSubUpdateIntervals)
+
   // ── Маршрутизация ────────────────────────────────────────────────────────
   String region;
   String balancerStrategy;
@@ -26,6 +46,7 @@ class AppSettings {
   bool bypassLan;
   bool resolveDestination;
   String ipv6Route;
+  List<RoutingRule> routingRules;
 
   // ══════════════════════════════════════════════════════════════════════════
   // Расширенные настройки (mihomo / clash.meta).
@@ -127,12 +148,16 @@ class AppSettings {
     this.dns = '1.1.1.1',
     this.packetAnalysis = true,
     this.useMux = false,
+    this.pingMode = 'TCP',
+    this.subAutoUpdate = false,
+    this.subUpdateHours = 0,
     this.region = 'Россия (ru)',
     this.balancerStrategy = 'Round robin',
     this.blockAds = false,
     this.bypassLan = false,
     this.resolveDestination = false,
     this.ipv6Route = 'Отключить',
+    List<RoutingRule>? routingRules,
 
     // DNS basic
     this.dnsRemote = 'tcp://8.8.8.8',
@@ -220,7 +245,7 @@ class AppSettings {
     this.metaGeositePath = '',
     this.metaCountryPath = '',
     this.metaAsnPath = '',
-  });
+  }) : routingRules = routingRules ?? [];
 
   /// Поверхностная копия — пригодится экранам, которым нужна локальная
   /// рабочая копия, не мутирующая глобальный AppState до явного save.
@@ -231,12 +256,16 @@ class AppSettings {
         dns = o.dns,
         packetAnalysis = o.packetAnalysis,
         useMux = o.useMux,
+        pingMode = o.pingMode,
+        subAutoUpdate = o.subAutoUpdate,
+        subUpdateHours = o.subUpdateHours,
         region = o.region,
         balancerStrategy = o.balancerStrategy,
         blockAds = o.blockAds,
         bypassLan = o.bypassLan,
         resolveDestination = o.resolveDestination,
         ipv6Route = o.ipv6Route,
+        routingRules = o.routingRules.map((r) => r.copy()).toList(),
         dnsRemote = o.dnsRemote,
         dnsRemoteDomainStrategy = o.dnsRemoteDomainStrategy,
         dnsFakeDns = o.dnsFakeDns,
@@ -318,12 +347,16 @@ class AppSettings {
         dns:                p.getString('s_dns') ?? '1.1.1.1',
         packetAnalysis:     p.getBool('s_packetAnalysis') ?? true,
         useMux:             p.getBool('s_useMux') ?? false,
+        pingMode:           p.getString('s_pingMode') ?? 'TCP',
+        subAutoUpdate:      p.getBool('s_subAutoUpdate') ?? false,
+        subUpdateHours:     p.getInt('s_subUpdateHours') ?? 0,
         region:             p.getString('s_region') ?? 'Россия (ru)',
         balancerStrategy:   p.getString('s_balancerStrategy') ?? 'Round robin',
         blockAds:           p.getBool('s_blockAds') ?? false,
         bypassLan:          p.getBool('s_bypassLan') ?? false,
         resolveDestination: p.getBool('s_resolveDestination') ?? false,
         ipv6Route:          p.getString('s_ipv6Route') ?? 'Отключить',
+        routingRules:       _decodeRules(p.getString('s_routingRules')),
 
         // DNS basic
         dnsRemote:                p.getString('s_dnsRemote') ?? 'tcp://8.8.8.8',
@@ -424,12 +457,16 @@ class AppSettings {
     p.setString('s_dns', dns);
     p.setBool('s_packetAnalysis', packetAnalysis);
     p.setBool('s_useMux', useMux);
+    p.setString('s_pingMode', pingMode);
+    p.setBool('s_subAutoUpdate', subAutoUpdate);
+    p.setInt('s_subUpdateHours', subUpdateHours);
     p.setString('s_region', region);
     p.setString('s_balancerStrategy', balancerStrategy);
     p.setBool('s_blockAds', blockAds);
     p.setBool('s_bypassLan', bypassLan);
     p.setBool('s_resolveDestination', resolveDestination);
     p.setString('s_ipv6Route', ipv6Route);
+    p.setString('s_routingRules', jsonEncode(routingRules.map((r) => r.toJson()).toList()));
 
     // DNS basic
     p.setString('s_dnsRemote', dnsRemote);
@@ -520,6 +557,19 @@ class AppSettings {
     p.setString('s_metaAsnPath', metaAsnPath);
   }
 
+  /// Декодирует список правил маршрутизации из JSON-строки prefs.
+  static List<RoutingRule> _decodeRules(String? raw) {
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw) as List;
+      return list
+          .map((e) => RoutingRule.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   /// Извлекает двухбуквенный код страны из строки региона вида "Россия (ru)".
   /// Возвращает код в нижнем регистре ('ru') или '' если не удалось распарсить.
   static String regionCodeOf(String region) {
@@ -552,6 +602,14 @@ class AppSettings {
     m['bypass_lan'] = bypassLan;
     m['resolve_destination'] = resolveDestination;
     m['ipv6_route'] = ipv6Route;
+    // Пользовательские правила маршрутизации (geosite/geoip/домен/IP → действие).
+    // Натив (ensureTunInbound) разворачивает их в field-правила xray. Только
+    // включённые и непустые; порядок = приоритет.
+    m['routing_rules'] = [
+      for (final r in routingRules)
+        if (r.enabled && r.value.trim().isNotEmpty)
+          {'kind': r.kind.id, 'value': r.value.trim(), 'action': r.action.id},
+    ];
 
     // DNS basic
     m['dns_remote'] = dnsRemote;

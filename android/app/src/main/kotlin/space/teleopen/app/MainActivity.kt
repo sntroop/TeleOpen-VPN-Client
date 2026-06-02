@@ -19,6 +19,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
+import libv2ray.Libv2ray
 
 class MainActivity : FlutterActivity() {
 
@@ -30,6 +31,20 @@ class MainActivity : FlutterActivity() {
         // Action для PendingIntent, который PackageInstaller дёргает с
         // результатом установки (см. installApk + installResultReceiver).
         const val ACTION_INSTALL_STATUS  = "space.teleopen.app.INSTALL_STATUS"
+
+        // initCoreEnv должен вызываться один раз на процесс. Делим флаг между
+        // measureDelay-потоками и VPN-сервисом (оба инициализируют ядро).
+        @Volatile private var coreEnvReady = false
+    }
+
+    /// Инициализирует Go-ядро ровно один раз (см. coreEnvReady). Безопасно
+    /// для конкурентных вызовов из нескольких measureDelay-потоков.
+    @Synchronized
+    private fun ensureCoreEnv() {
+        if (coreEnvReady) return
+        // Второй аргумент — xudp BaseKey, не путь (см. HysteriaTunVpnService).
+        Libv2ray.initCoreEnv(filesDir.absolutePath, "")
+        coreEnvReady = true
     }
 
     private var pendingResult: MethodChannel.Result? = null
@@ -248,6 +263,35 @@ class MainActivity : FlutterActivity() {
                             result.success("ok")
                         } catch (e: Throwable) {
                             result.success("err: ${e.message}")
+                        }
+                    }
+
+                    // Реальная задержка outbound'а через ядро (для HTTP-пинга нод).
+                    // measureOutboundDelay поднимает временный изолированный инстанс
+                    // по конфигу и делает HTTP-запрос к url, возвращая RTT в мс.
+                    // Тяжёлая операция (до timeout) → уносим в фоновый поток.
+                    "measureDelay" -> {
+                        val config = call.argument<String>("config") ?: ""
+                        val url = call.argument<String>("url") ?: "https://www.gstatic.com/generate_204"
+                        if (config.isEmpty()) {
+                            result.success(-1L)
+                        } else {
+                            Thread {
+                                val ms: Long = try {
+                                    // initCoreEnv задаёт путь к geo-ассетам/xudp-ключу.
+                                    // Вызываем РОВНО ОДИН раз под замком: при HTTP-пинге
+                                    // measureDelay летит из нескольких потоков сразу, а
+                                    // одновременные initCoreEnv роняли/вешали замер.
+                                    ensureCoreEnv()
+                                    val v = Libv2ray.measureOutboundDelay(config, url)
+                                    HysteriaTunVpnService.flog("measureDelay", "→ ${v}ms ($url)")
+                                    v
+                                } catch (e: Throwable) {
+                                    HysteriaTunVpnService.flogE("measureDelay", e.message ?: "?", e)
+                                    -1L
+                                }
+                                runOnUiThread { result.success(ms) }
+                            }.start()
                         }
                     }
 

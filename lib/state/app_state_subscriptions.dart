@@ -68,6 +68,44 @@ mixin AppStateSubscriptions on AppStateBase {
     return null;
   }
 
+  /// Фоновое обновление всех подписок (URL и из маркета). Ошибки отдельных
+  /// групп глушим — это автоматический фон, он не должен ломать UI.
+  /// Вызывается по таймеру (AppState.reconfigureSubscriptionAutoUpdate).
+  @override
+  Future<void> refreshAllSubscriptions() async {
+    for (final g in List<VpnGroup>.from(groups)) {
+      try {
+        if (g.sourceUrl != null && g.sourceUrl!.isNotEmpty) {
+          await refreshSubscription(g);
+        } else if (g.id.startsWith('market_')) {
+          final marketId = int.tryParse(g.id.substring('market_'.length));
+          if (marketId == null) continue;
+          // Требует валидный JWT; без логина вернётся 401 → попадём в catch.
+          final res = await MarketApi.get(marketId);
+          final nodes = <VpnNode>[];
+          for (final mn in res.nodes) {
+            final n = parseUri(mn.uri);
+            if (n != null) {
+              n.groupId = g.id;
+              n.isFavorite = favoriteIds.contains(n.id);
+              nodes.add(n);
+            }
+          }
+          if (nodes.isNotEmpty) {
+            g.nodes = nodes;
+            g.subtitle = '${nodes.length} серверов · из маркета';
+            g.updatedAt = DateTime.now();
+          }
+        }
+      } catch (_) {
+        // отдельная группа не обновилась — пропускаем
+      }
+    }
+    _saveGroups();
+    notifyListeners();
+    prefs.setInt('last_sub_refresh', DateTime.now().millisecondsSinceEpoch);
+  }
+
   String? addManualNode(String uri) {
     final cleaned = uri.trim();
     final lower = cleaned.toLowerCase();
