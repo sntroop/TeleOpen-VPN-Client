@@ -1,0 +1,78 @@
+# Miscellaneous
+*.class
+*.log
+*.bak
+nohup.out
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Release artifacts — собранные APK не храним в репе (раздувают историю).
+# Релиз кладём в GitHub Releases / на бэкенд через teleopen-publish.
+*.apk
+*.aab
+
+# Подпись релиза — секреты не коммитим (см. android/key.properties.example)
+android/key.properties
+*.jks
+*.keystore
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+dist/
+
+# Локальные дампы logcat с устройства (диагностика, не код)
+LOGCAT/
+
+# Happ-дешифратор: рабочие артефакты и референс-репы реверса — НЕ в публичный
+# репозиторий. В репо едут только собранные ключи assets/happ/*.json и код
+# logic/happ_decrypt.dart + logic/happ_keys_loader.dart.
+/amur/
+/opex/
+/kastov/
+/happ_work/
+/crypt.txt
+/Happ_*.apk
+/extract_happ_keys.py
+/decrypt_happ.py
+/build_happ_assets.py
+
+# Локальные настройки агента
+/.claude/
+.aider*

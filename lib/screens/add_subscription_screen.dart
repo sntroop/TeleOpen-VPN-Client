@@ -1,0 +1,830 @@
+// lib/screens/add_subscription_screen.dart
+//
+// Экран добавления подписки.
+// Три способа: из буфера обмена, по QR-коду, вручную + вкладка «Подписка».
+
+library add_subscription_screen;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
+
+import '../ios_theme.dart';
+import '../main.dart';
+import '../models/mtproto_proxy.dart';
+import '../logic/market_api.dart';
+import '../logic/subscriptions.dart';
+import '../logic/teleopen_link.dart';
+import '../logic/happ_decrypt.dart' show HappMissingKeyException;
+import '../logic/happ_keys_loader.dart';
+
+// ── режимы экрана ─────────────────────────────────────────────────────────────
+part 'add_subscription/parts.dart';
+
+enum _AddMode { none, clipboard, qr, manual, subscription, teleopen, file }
+
+class AddSubscriptionScreen extends StatefulWidget {
+  const AddSubscriptionScreen({super.key});
+
+  @override
+  State<AddSubscriptionScreen> createState() => _AddSubscriptionScreenState();
+}
+
+class _AddSubscriptionScreenState extends State<AddSubscriptionScreen> {
+  final _urlCtrl        = TextEditingController();
+  final _titleCtrl      = TextEditingController();
+  final _manualCtrl     = TextEditingController();
+  final _teleopenCtrl   = TextEditingController();
+
+  _AddMode _mode = _AddMode.none;
+
+  bool _loading = false;
+  String? _error;
+
+  // Прогресс импорта из файла (chunked-парсинг тысяч ссылок).
+  int _progDone = 0;
+  int _progTotal = 0;
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    _titleCtrl.dispose();
+    _manualCtrl.dispose();
+    _teleopenCtrl.dispose();
+    super.dispose();
+  }
+
+  /// Расшифровывает happ://-ссылки в [raw]. Возвращает расширенный текст, либо
+  /// null (выставив _error и сняв _loading), если ключа нет или расшифровка
+  /// не удалась. Строки без happ:// проходят насквозь.
+  Future<String?> _expandHapp(String raw) async {
+    // Голая happ://-ссылка ИЛИ обёртка-редиректор с percent-кодировкой
+    // (ssconnect.app/link?url_ha=happ%3A%2F%2F…). Во втором случае literal
+    // 'happ://' отсутствует — ловим по percent-encoded маркеру.
+    final lo = raw.toLowerCase();
+    if (!lo.contains('happ://') && !lo.contains('happ%3a%2f%2f')) return raw;
+    try {
+      return await expandHappLinks(raw);
+    } on HappMissingKeyException catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Нет ключа для этой Happ-ссылки (маркер ${e.marker}). '
+              'Возможно, ссылка из новой версии Happ.';
+        });
+      }
+      return null;
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Не удалось расшифровать Happ-ссылку: $e';
+        });
+      }
+      return null;
+    }
+  }
+
+  // ── clipboard ──────────────────────────────────────────────────────────────
+  Future<void> _addFromClipboard() async {
+    // Берём state синхронно, до любого await — позже context может стать
+    // невалидным (use_build_context_synchronously).
+    final state = AppStateScope.of(context);
+    setState(() { _loading = true; _error = null; });
+
+    String raw = '';
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      raw = data?.text?.trim() ?? '';
+    } catch (_) {
+      // Чтение буфера не удалось — raw останется пустым, и ниже пользователь
+      // увидит понятную ошибку «Буфер обмена пуст». Отдельный лог не нужен.
+    }
+
+    if (raw.isEmpty) {
+      setState(() { _loading = false; _error = 'Буфер обмена пуст'; });
+      return;
+    }
+
+    // happ://crypt..crypt5 — расшифровываем в обычный текст (URL подписки или
+    // список vless://...), дальше логика ниже обрабатывает его как обычно.
+    final expanded = await _expandHapp(raw);
+    if (expanded == null) return;
+    raw = expanded.trim();
+
+    // Если в буфере одна HTTP/HTTPS-ссылка (raw.githubusercontent.com и т.п.)
+    // — качаем как подписку.
+    if (_looksLikeHttpUrl(raw)) {
+      final err = await state.addSubscription(url: raw);
+      if (!mounted) return;
+      if (err != null) {
+        setState(() { _loading = false; _error = err; });
+      } else {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+
+    final lines = raw
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    final supported = lines.where((l) {
+      final lo = l.toLowerCase();
+      return lo.startsWith('vless://') ||
+             lo.startsWith('vmess://') ||
+             lo.startsWith('trojan://') ||
+             lo.startsWith('ssr://') ||
+             lo.startsWith('ss://') ||
+             lo.startsWith('hysteria://') ||
+             lo.startsWith('hysteria2://') ||
+             lo.startsWith('hy2://') ||
+             lo.startsWith('tuic://') ||
+             lo.startsWith('socks://');
+    }).toList();
+
+    if (supported.isEmpty) {
+      setState(() {
+        _loading = false;
+        _error = 'В буфере нет поддерживаемых URI (vless/vmess/trojan/…) или ссылки на подписку';
+      });
+      return;
+    }
+
+    int added = 0;
+    String? lastErr;
+    for (final uri in supported) {
+      final err = state.addManualNode(uri);
+      if (err == null) {
+        added++;
+      } else {
+        lastErr = err;
+      }
+    }
+
+    if (!mounted) return;
+    if (added == 0) {
+      setState(() { _loading = false; _error = lastErr ?? 'Не удалось добавить серверы'; });
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  // ── TeleOpen код (VPN или MTProto) ────────────────────────────────────────
+  Future<void> _addTeleopenCode() async {
+    final input = _teleopenCtrl.text.trim();
+    if (input.isEmpty) {
+      setState(() => _error = 'Введите код или ссылку');
+      return;
+    }
+    setState(() { _loading = true; _error = null; });
+
+    // 0) Живая ссылка TeleOpen: teleopen://s/<code> или 16-символьный код.
+    //    Резолвим через /v2/resolve (sub-формат парсит SubscriptionLoader,
+    //    json-формат даёт бренд/renew_url).
+    final tlo = parseTeleOpenLink(input);
+    if (tlo != null) {
+      final res = await AppStateScope.of(context, listen: false)
+          .addTeleopenLink(tlo);
+      if (!mounted) return;
+      if (res.ok) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('«${res.title}» добавлена — ${res.nodeCount} серверов'),
+          duration: const Duration(seconds: 2),
+        ));
+        Navigator.of(context).pop();
+        return;
+      }
+      setState(() { _error = res.error; _loading = false; });
+      return;
+    }
+
+    // Извлекаем чистый 6-значный код (легаси-коды /sub и /v1/mtproto)
+    String extractCode(String s) {
+      final trimmed = s.trim().toUpperCase();
+      if (RegExp(r'^[A-Z0-9]{6}$').hasMatch(trimmed)) return trimmed;
+      final uri = Uri.tryParse(s.trim());
+      if (uri != null && uri.pathSegments.isNotEmpty) {
+        return uri.pathSegments.last.toUpperCase();
+      }
+      if (trimmed.length >= 6) return trimmed.substring(trimmed.length - 6);
+      return trimmed;
+    }
+
+    final code = extractCode(input);
+
+    // 1) Пробуем как MTProto-код: GET /v1/mtproto/<code>
+    try {
+      final mtUrl = input.contains('/v1/mtproto/')
+          ? (input.startsWith('http') ? input : 'https://$input')
+          : '$kApiBase/v1/mtproto/$code';
+      final resp = await http.get(Uri.parse(mtUrl))
+          .timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200) {
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        if (body.containsKey('proxies')) {
+          final title = (body['title'] as String?) ?? 'MTProto $code';
+          final rawList = body['proxies'] as List;
+          final proxies = rawList
+              .whereType<Map<String, dynamic>>()
+              .map((p) => MtProtoProxy.tryParse(
+                    p['link'] as String? ?? '',
+                    name: p['displayName'] as String? ?? '',
+                  ))
+              .whereType<MtProtoProxy>()
+              .toList();
+          if (proxies.isNotEmpty && mounted) {
+            final group = MtProtoProxyGroup(
+              id: 'code_$code',
+              title: title,
+              proxies: proxies,
+            );
+            AppStateScope.of(context, listen: false).addMtProtoGroup(group);
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('«$title» добавлена — ${proxies.length} прокси'),
+              duration: const Duration(seconds: 2),
+            ));
+            Navigator.of(context).pop();
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2) Пробуем как VPN-подписку: /sub/<code>
+    try {
+      final url = input.contains('://') || input.contains(kApiBase.split('://').last)
+          ? (input.startsWith('http') ? input : 'https://$input')
+          : '$kApiBase/sub/$code';
+      final result = await SubscriptionLoader.load(url);
+      if (!mounted) return;
+      if (result.error == null && result.nodes.isNotEmpty) {
+        final title = result.groupTitle.isNotEmpty ? result.groupTitle : 'Код $code';
+        final err = await AppStateScope.of(context, listen: false)
+            .addSubscription(url: url, title: title);
+        if (!mounted) return;
+        if (err != null) throw Exception(err);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('«$title» добавлена — ${result.nodes.length} серверов'),
+          duration: const Duration(seconds: 2),
+        ));
+        Navigator.of(context).pop();
+        return;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _loading = false; });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _error = 'Код не найден или истёк. Попробуйте ещё раз.';
+        _loading = false;
+      });
+    }
+  }
+
+  // ── из файла ────────────────────────────────────────────────────────────
+  // Пользователь выбирает текстовый файл; мы парсим из него VPN-ссылки
+  // (vless/vmess/trojan/…) и ссылки на подписки (http/https) и добавляем их.
+  Future<void> _addFromFile() async {
+    final state = AppStateScope.of(context);
+    setState(() { _loading = true; _error = null; _progDone = 0; _progTotal = 0; });
+
+    String content;
+    try {
+      final res = await FilePicker.platform.pickFiles(withData: true);
+      if (res == null || res.files.isEmpty) {
+        // отмена выбора — просто выходим из режима
+        setState(() { _loading = false; _mode = _AddMode.none; });
+        return;
+      }
+      final f = res.files.first;
+      if (f.bytes != null) {
+        content = utf8.decode(f.bytes!, allowMalformed: true);
+      } else if (f.path != null) {
+        content = await File(f.path!).readAsString();
+      } else {
+        setState(() { _loading = false; _error = 'Не удалось прочитать файл'; });
+        return;
+      }
+    } catch (e) {
+      setState(() { _loading = false; _error = 'Не удалось открыть файл: $e'; });
+      return;
+    }
+
+    // happ://… — расшифровываем, как в остальных способах.
+    final expanded = await _expandHapp(content.trim());
+    if (expanded == null) return; // _expandHapp уже выставил _error/_loading
+    var text = expanded.trim();
+
+    // Цельный base64-блоб (типичное тело подписки) — пробуем декодировать.
+    if (text.isNotEmpty && !text.contains('://')) {
+      try {
+        final dec = utf8.decode(base64.decode(text.replaceAll(RegExp(r'\s+'), '')));
+        if (dec.contains('://')) text = dec;
+      } catch (_) {/* не base64 — оставляем как есть */}
+    }
+
+    final lines = text
+        .split(RegExp(r'[\r\n]+'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    // Разделяем строки: ссылки на подписки (http/https) грузим по сети по
+    // одной, а прямые VPN/MTProto-ссылки добавляем ОДНОЙ пачкой — иначе на
+    // тысячах конфигов главный поток виснет и приложение падает.
+    final subLines = <String>[];
+    final nodeLines = <String>[];
+    for (final line in lines) {
+      (_looksLikeHttpUrl(line) ? subLines : nodeLines).add(line);
+    }
+
+    int added = 0, subs = 0, failed = 0;
+    String? lastErr;
+
+    // 1) Прямые ноды — пакетно, chunked-парсинг с прогрессом (десятки тысяч URI
+    //    не должны вешать UI).
+    if (nodeLines.isNotEmpty) {
+      final r = await state.addManualNodesBulk(
+        nodeLines,
+        onProgress: (done, totalN) {
+          if (mounted) setState(() { _progDone = done; _progTotal = totalN; });
+        },
+      );
+      added += r.added;
+      failed += r.failed;
+    }
+
+    // 2) Подписки — каждая тянется по сети; отдаём поток событий между ними.
+    for (final url in subLines) {
+      final err = await state.addSubscription(url: url);
+      if (err == null) { added++; subs++; } else { failed++; lastErr = err; }
+    }
+
+    if (!mounted) return;
+    if (added == 0) {
+      setState(() {
+        _loading = false;
+        _error = lastErr ?? 'В файле не найдено серверов или ссылок на подписки';
+      });
+    } else {
+      final parts = <String>[
+        if (subs > 0) 'подписок: $subs',
+        if (failed > 0) 'пропущено: $failed',
+      ];
+      final extra = parts.isEmpty ? '' : ' (${parts.join(', ')})';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Добавлено серверов: $added$extra'),
+        duration: const Duration(seconds: 3),
+      ));
+      Navigator.of(context).pop();
+    }
+  }
+
+  bool _looksLikeHttpUrl(String s) {
+    final t = s.trim();
+    if (t.contains('\n')) return false;
+    final lo = t.toLowerCase();
+    // t.me/proxy и t.me/socks — MTProto/SOCKS deep-link, не подписка
+    if (lo.contains('t.me/proxy') || lo.contains('t.me/socks')) return false;
+    return lo.startsWith('http://') || lo.startsWith('https://');
+  }
+
+  // ── QR ────────────────────────────────────────────────────────────────────
+  Future<void> _scanQr() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const _QrScannerPage()),
+    );
+    if (result == null || !mounted) return;
+    setState(() { _loading = true; _error = null; });
+
+    // QR может содержать happ://-ссылку — расшифровываем.
+    final expanded = await _expandHapp(result.trim());
+    if (expanded == null) return;
+    final text = expanded.trim();
+    if (!mounted) return;
+    final state = AppStateScope.of(context);
+
+    // Расшифрованный happ:// мог развернуться в URL подписки.
+    if (_looksLikeHttpUrl(text)) {
+      final err = await state.addSubscription(url: text);
+      if (!mounted) return;
+      if (err != null) {
+        setState(() { _loading = false; _error = err; });
+      } else {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+
+    // Иначе — одна или несколько строк-нод.
+    int added = 0;
+    String? lastErr;
+    for (final uri in text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty)) {
+      final err = state.addManualNode(uri);
+      if (err == null) { added++; } else { lastErr = err; }
+    }
+    if (!mounted) return;
+    if (added == 0) {
+      setState(() { _loading = false; _error = lastErr ?? 'Не удалось добавить'; });
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  // ── manual URI ────────────────────────────────────────────────────────────
+  Future<void> _addManual() async {
+    var raw = _manualCtrl.text.trim();
+    if (raw.isEmpty) {
+      setState(() => _error = 'Вставьте или введите URI сервера');
+      return;
+    }
+    setState(() { _loading = true; _error = null; });
+
+    // happ://crypt..crypt5 — расшифровываем (URL подписки или vless-список).
+    final expanded = await _expandHapp(raw);
+    if (expanded == null) return;
+    if (!mounted) return;
+    raw = expanded.trim();
+
+    // Если введена HTTP/HTTPS-ссылка — скачиваем как подписку
+    if (_looksLikeHttpUrl(raw)) {
+      final state = AppStateScope.of(context);
+      final err = await state.addSubscription(url: raw);
+      if (!mounted) return;
+      if (err != null) {
+        setState(() { _loading = false; _error = err; });
+      } else {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+
+    final lines = raw
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    final state = AppStateScope.of(context);
+    int added = 0;
+    String? lastErr;
+    for (final uri in lines) {
+      final err = state.addManualNode(uri);
+      if (err == null) {
+        added++;
+      } else {
+        lastErr = err;
+      }
+    }
+
+    if (!mounted) return;
+    if (added == 0) {
+      setState(() { _loading = false; _error = lastErr ?? 'Не удалось распарсить URI'; });
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  // ── subscription URL ───────────────────────────────────────────────────────
+  Future<void> _addSubscription() async {
+    final url = _urlCtrl.text.trim();
+    final title = _titleCtrl.text.trim().isEmpty ? null : _titleCtrl.text.trim();
+    if (url.isEmpty) {
+      setState(() => _error = 'Введите URL подписки');
+      return;
+    }
+    setState(() { _loading = true; _error = null; });
+
+    final state = AppStateScope.of(context);
+    final err = await state.addSubscription(url: url, title: title);
+    if (!mounted) return;
+    if (err != null) {
+      setState(() { _loading = false; _error = err; });
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  // ── build ──────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final t = IosTheme.of(context);
+    final c = t.colors;
+
+    return Scaffold(
+      backgroundColor: c.bgPrimary,
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 16, 8),
+              child: Row(children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context).pop(),
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(children: [
+                      Icon(CupertinoIcons.chevron_back, size: 22, color: c.textPrimary),
+                      Text(' Назад', style: t.textStyles.body.copyWith(color: c.textPrimary)),
+                    ]),
+                  ),
+                ),
+                const Spacer(),
+              ]),
+            ),
+
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+              child: Row(children: [
+                Text('Добавить', style: t.textStyles.largeTitle),
+              ]),
+            ),
+
+            // Main content
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                physics: const BouncingScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // ── три кнопки ─────────────────────────────────────────
+                    _MethodButton(
+                      icon: CupertinoIcons.doc_on_clipboard,
+                      label: 'Добавить из буфера обмена',
+                      subtitle: 'Vless/vmess/trojan-ссылки или URL подписки (GitHub raw)',
+                      selected: _mode == _AddMode.clipboard,
+                      loading: _loading && _mode == _AddMode.clipboard,
+                      onTap: () {
+                        setState(() { _mode = _AddMode.clipboard; _error = null; });
+                        _addFromClipboard();
+                      },
+                      t: t,
+                      c: c,
+                    ),
+                    const SizedBox(height: 10),
+                    _MethodButton(
+                      icon: CupertinoIcons.qrcode_viewfinder,
+                      label: 'Добавить по QR',
+                      subtitle: 'Сканировать QR-код сервера',
+                      selected: _mode == _AddMode.qr,
+                      loading: _loading && _mode == _AddMode.qr,
+                      onTap: () {
+                        setState(() { _mode = _AddMode.qr; _error = null; });
+                        _scanQr();
+                      },
+                      t: t,
+                      c: c,
+                    ),
+                    const SizedBox(height: 10),
+                    _MethodButton(
+                      icon: CupertinoIcons.pencil,
+                      label: 'Ввести вручную',
+                      subtitle: 'URI сервера или несколько строк',
+                      selected: _mode == _AddMode.manual,
+                      loading: false,
+                      onTap: () => setState(() {
+                        _mode = _mode == _AddMode.manual ? _AddMode.none : _AddMode.manual;
+                        _error = null;
+                      }),
+                      t: t,
+                      c: c,
+                    ),
+
+                    // ── разворачивающаяся форма — вручную ──────────────────
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeInOut,
+                      child: _mode == _AddMode.manual
+                          ? Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: _manualForm(t, c),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // ── разделитель ────────────────────────────────────────
+                    Row(children: [
+                      Expanded(child: Divider(color: c.separator, thickness: 0.5)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'или по URL подписки',
+                          style: t.textStyles.footnote.copyWith(color: c.textSecondary),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: c.separator, thickness: 0.5)),
+                    ]),
+
+                    const SizedBox(height: 16),
+
+                    // ── кнопка подписки ────────────────────────────────────
+                    _MethodButton(
+                      icon: CupertinoIcons.link,
+                      label: 'Добавить подписку',
+                      subtitle: 'v2rayN, Hiddify, plaintext URL',
+                      selected: _mode == _AddMode.subscription,
+                      loading: _loading && _mode == _AddMode.subscription,
+                      onTap: () => setState(() {
+                        _mode = _mode == _AddMode.subscription
+                            ? _AddMode.none
+                            : _AddMode.subscription;
+                        _error = null;
+                      }),
+                      t: t,
+                      c: c,
+                    ),
+
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeInOut,
+                      child: _mode == _AddMode.subscription
+                          ? Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: _subForm(t, c),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // ── кнопка «из файла» ──────────────────────────────────
+                    _MethodButton(
+                      icon: CupertinoIcons.doc_text,
+                      label: 'Добавить из файла',
+                      subtitle: 'Файл со ссылками: VPN-ссылки и/или URL подписок',
+                      selected: _mode == _AddMode.file,
+                      loading: _loading && _mode == _AddMode.file,
+                      onTap: () {
+                        setState(() { _mode = _AddMode.file; _error = null; });
+                        _addFromFile();
+                      },
+                      t: t,
+                      c: c,
+                    ),
+
+                    // Прогресс chunked-импорта из файла.
+                    if (_loading && _mode == _AddMode.file && _progTotal > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8, left: 4),
+                        child: Text(
+                          'Обработано $_progDone / $_progTotal',
+                          style: t.textStyles.footnote.copyWith(color: c.textSecondary),
+                        ),
+                      ),
+
+                    const SizedBox(height: 10),
+
+                    // ── кнопка TeleOpen-кода ───────────────────────────────
+                    _MethodButton(
+                      icon: CupertinoIcons.number,
+                      label: 'Ввести код TeleOpen',
+                      subtitle: '6-значный код или ссылка — VPN и MTProto',
+                      selected: _mode == _AddMode.teleopen,
+                      loading: _loading && _mode == _AddMode.teleopen,
+                      onTap: () => setState(() {
+                        _mode = _mode == _AddMode.teleopen
+                            ? _AddMode.none
+                            : _AddMode.teleopen;
+                        _error = null;
+                      }),
+                      t: t,
+                      c: c,
+                    ),
+
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeInOut,
+                      child: _mode == _AddMode.teleopen
+                          ? Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: _teleopenForm(t, c),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+
+                    // ── ошибка ─────────────────────────────────────────────
+                    if (_error != null) ...[
+                      const SizedBox(height: 16),
+                      _ErrorBanner(error: _error!, t: t, c: c),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+
+            // Bottom action button (только для форм ввода)
+            if (_mode == _AddMode.manual || _mode == _AddMode.subscription || _mode == _AddMode.teleopen)
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                    16, 8, 16, MediaQuery.of(context).padding.bottom + 12),
+                child: IosButton(
+                  label: switch (_mode) {
+                    _AddMode.subscription => 'Добавить подписку',
+                    _AddMode.teleopen     => 'Добавить по коду',
+                    _                    => 'Добавить сервер',
+                  },
+                  style: IosButtonStyle.primary,
+                  loading: _loading,
+                  onPressed: _loading
+                      ? null
+                      : switch (_mode) {
+                          _AddMode.subscription => _addSubscription,
+                          _AddMode.teleopen     => _addTeleopenCode,
+                          _                    => _addManual,
+                        },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── sub-forms ──────────────────────────────────────────────────────────────
+  Widget _manualForm(IosThemeData t, IosColors c) {
+    return IosCard(
+      radius: IosShapes.radiusLarge,
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        IosField(
+          controller: _manualCtrl,
+          label: 'URI сервера или ссылка',
+          placeholder: 'vless://…  vmess://…  trojan://…\nили https://raw.githubusercontent.com/…',
+          maxLines: 5,
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Поддерживаются: VLESS, VMess, Trojan, Hysteria2, Shadowsocks, SOCKS,\nа также HTTP(S)-ссылки на список конфигов (GitHub raw и подобные).',
+          style: t.textStyles.footnote.copyWith(color: c.textSecondary),
+        ),
+      ]),
+    );
+  }
+
+  Widget _subForm(IosThemeData t, IosColors c) {
+    return IosCard(
+      radius: IosShapes.radiusLarge,
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        IosField(
+          controller: _urlCtrl,
+          label: 'URL подписки',
+          placeholder: 'https://example.com/sub',
+          keyboardType: TextInputType.url,
+        ),
+        const SizedBox(height: 12),
+        IosField(
+          controller: _titleCtrl,
+          label: 'Название (опционально)',
+          placeholder: 'Моя подписка',
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Поддерживаются ссылки на подписки в форматах v2rayN (base64), Hiddify, plaintext.',
+          style: t.textStyles.footnote.copyWith(color: c.textSecondary),
+        ),
+      ]),
+    );
+  }
+  Widget _teleopenForm(IosThemeData t, IosColors c) {
+    return IosCard(
+      radius: IosShapes.radiusLarge,
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        IosField(
+          controller: _teleopenCtrl,
+          label: 'Код или ссылка',
+          placeholder: 'ABC123  или  https://teleopen.space/v1/mtproto/ABC123',
+          keyboardType: TextInputType.text,
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Работает для VPN-серверов и MTProto-прокси. Просто вставь код или ссылку — тип определится автоматически.',
+          style: t.textStyles.footnote.copyWith(color: c.textSecondary),
+        ),
+      ]),
+    );
+  }
+}
+
+// ── Кнопка-метод ─────────────────────────────────────────────────────────────

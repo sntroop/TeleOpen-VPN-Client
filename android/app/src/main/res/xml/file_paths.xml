@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Пути, по которым FileProvider разрешает шарить файлы наружу.
+  Кладём по адресу android/app/src/main/res/xml/file_paths.xml
+
+  Нам нужен только cache-path: APK качается в getTemporaryDirectory()
+  (= внутренний кэш приложения), оттуда же отдаётся системному установщику.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+    <!-- На всякий случай: некоторые Flutter-плагины кладут в external cache -->
+    <external-cache-path name="ext_updates" path="updates/" />
+</paths>

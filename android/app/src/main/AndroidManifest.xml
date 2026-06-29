@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- ВАЖНО: для VPN-туннеля на Android 14+ (targetSdk 34..36) корректный
+         тип foreground-сервиса — connectedDevice, а НЕ specialUse.
+         specialUse зарезервирован под системные интеграции и при ХОЛОДНОМ
+         старте VpnService-наследника Android бросает
+         ForegroundServiceTypeNotAllowedException → нативный краш без Dart-лога.
+         Именно поэтому VPN «ломался сам по себе» после дня простоя:
+         процесс выгружался, и горячий путь (где краш не воспроизводился)
+         сменялся холодным. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"/>
+
+    <!-- ═══ In-app updates ════════════════════════════════════════════════
+         Разрешение чтобы наше приложение могло запросить установку APK.
+         С Android 8+ юзер ещё должен дать ручное согласие в Настройках
+         «Установка неизвестных приложений» — это разовая операция.
+         Без этого permission'а Intent.ACTION_VIEW для apk просто не сработает. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
+    <!-- ═══ Package visibility (Android 11+) ═══════════════════════════════
+         Нужно, чтобы приложение могло видеть Telegram-форки и запускать
+         tg://proxy?... через setPackage(). Работает даже без
+         QUERY_ALL_PACKAGES — поэтому если Google Play потребует убрать
+         QUERY_ALL_PACKAGES, MTProto-функция продолжит работать. -->
+    <queries>
+        <!-- Любое приложение, умеющее открывать tg:// deep-links -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tg" />
+        </intent>
+        <!-- t.me HTTPS-ссылки на прокси -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" android:host="t.me" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="TeleOpen"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:requestLegacyExternalStorage="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+            <!-- MAIN/LAUNCHER намеренно НЕ здесь, а в activity-alias ниже.
+                 Это даёт сменные иконки приложения: каждая иконка — отдельный
+                 alias с своим android:icon; ровно один enabled. Переключаем их
+                 рантайм-ом через PackageManager.setComponentEnabledSetting
+                 (см. MainActivity → "setAppIcon"). -->
+            <!-- Живые ссылки TeleOpen: teleopen://s/<code> (app_links их ловит) -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="teleopen" />
+            </intent-filter>
+        </activity>
+
+        <!-- ═══ Сменные иконки приложения (activity-alias) ════════════════════
+             Каждый alias = одна иконка в лаунчере. Все указывают на
+             .MainActivity (targetActivity). По умолчанию включён только
+             .LauncherDefault (текущая иконка TeleOpen); остальные enabled=false.
+             Смена иконки: включить нужный alias и выключить остальные через
+             setComponentEnabledSetting(DONT_KILL_APP). Имя alias'а в Dart/Kotlin
+             совпадает с ключом варианта (см. themes_screen.dart).
+             ВАЖНО: всегда ровно ОДИН alias enabled, иначе иконка исчезнет. -->
+        <activity-alias
+            android:name=".LauncherDefault"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="true"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherBase"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_base">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherBlue"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_blue">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherClassic"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_classic">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherGreen"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_green">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherPink"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_pink">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherPixeldef"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_pixeldef">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherPixelstd"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_pixelstd">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherViolet"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_violet">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherWhite"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_white">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".LauncherYellow"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:label="TeleOpen"
+            android:icon="@mipmap/ic_launcher_yellow">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- ═══ Hysteria TUN VpnService ═══════════════════════════════════════ -->
+        <service
+            android:name=".HysteriaTunVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="connectedDevice">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <!-- Always-on / Lockdown: появляется тоггл в Системных настройках → VPN.
+                 Когда пользователь его включит, Android будет автоматически
+                 переподключать сервис при старте устройства и блокировать
+                 трафик пока туннель не поднят (если выбран Lockdown). -->
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+        </service>
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+
+        <!-- ═══ Виджет на главный экран: листаемый список серверов ═══════════ -->
+        <receiver
+            android:name=".ServerWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="space.teleopen.app.WIDGET_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/server_widget_info" />
+        </receiver>
+        <!-- RemoteViewsService питает ListView виджета строками серверов -->
+        <service
+            android:name=".ServerWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <!-- Тап по строке виджета → headless-запуск VPN (без открытия app) -->
+        <receiver
+            android:name=".WidgetActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="space.teleopen.app.WIDGET_CONNECT" />
+                <action android:name="space.teleopen.app.WIDGET_TOGGLE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ═══ Автозапуск VPN при загрузке устройства (autoConnectOnBoot) ═══ -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+
+        <!-- ═══ Quick Settings tile: подключить/отключить последний сервер ═══ -->
+        <service
+            android:name=".VpnTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_vpn"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+
+        <!-- ═══ FileProvider для in-app updates ══════════════════════════════
+             С Android 7+ нельзя передавать в Intent сырой file:// URI —
+             только content:// через FileProvider. Authority обязан совпадать
+             с тем, что MainActivity использует в getUriForFile(). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+            <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
+    </application>
+</manifest>

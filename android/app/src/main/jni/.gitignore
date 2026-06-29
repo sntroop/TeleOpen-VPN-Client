@@ -1,0 +1,4 @@
+# Вендоренные исходники ciadpi и артефакты сборки .so — не коммитим.
+# libciadpi.so кладётся в ../jniLibs/<abi>/ (см. README.md).
+vendored/
+build/

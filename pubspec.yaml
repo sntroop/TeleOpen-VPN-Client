@@ -1,0 +1,62 @@
+name: my_vpn
+description: "TeleOpen VPN Project"
+publish_to: 'none'
+version: 1.1.8+5037
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_v2ray:
+    path: ./flutter_v2ray_local
+  http: ^1.2.0
+  intl: ^0.20.2
+  shared_preferences: ^2.5.5
+  # Чувствительные данные (JWT) храним в Keystore/Keychain, а не в
+  # SharedPreferences открытым текстом. См. logic/secure_store.dart.
+  flutter_secure_storage: ^9.2.2
+  url_launcher: ^6.3.2
+  image_picker: ^1.1.2
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.0.0
+  installed_apps: ^1.4.0
+  flutter_local_notifications: ^17.0.0
+  path_provider: ^2.1.4   # <-- вот это
+  cupertino_icons: ^1.0.9
+  # Тест скорости — самописный на dart:io через Cloudflare (https), см.
+  # lib/logic/speed_benchmark.dart. Раньше был плагин
+  # flutter_internet_speed_test_pro, но он зависал на 0 (заброшенная нативка
+  # fr.bmartel.speedtest + cleartext-фолбэк, который рубил network-config).
+  # Для проверки sha256 при in-app self-update (logic/updater.dart):
+  # хэш скачанного APK сверяется с тем, что отдал сервер, прежде чем
+  # передавать файл системному установщику.
+  crypto: ^3.0.3
+  # Расшифровка Happ-ссылок (happ://crypt..crypt5) — logic/happ_decrypt.dart:
+  # RSA-PKCS1v15 + ChaCha20-Poly1305 (pointycastle), парсинг PKCS8 (asn1lib).
+  pointycastle: ^3.9.1
+  asn1lib: ^1.5.3
+  # Импорт конфигов из файла на экране add_subscription.
+  file_picker: ^8.1.2
+  # Deep links teleopen://s/<code> — приём ссылки из браузера/Telegram
+  # (cold start + warm). intent-filter в AndroidManifest, схема в iOS Info.plist.
+  app_links: ^6.3.2
+dev_dependencies:
+  flutter_test:
+  flutter_lints: ^3.0.0
+flutter:
+  uses-material-design: true
+  # Добавляем сюда:
+  assets:
+    - assets/world_map.png
+    - assets/hysteria2
+    - assets/telegram.png
+    # Превью сменных иконок приложения (экран «Темы» → Иконка приложения).
+    - assets/icons/
+    # Ключи для расшифровки happ://crypt..crypt5 (logic/happ_decrypt.dart).
+    # Собираются build_happ_assets.py.
+    - assets/happ/
+
+dependency_overrides:
+  flutter_test:
+    sdk: flutter
